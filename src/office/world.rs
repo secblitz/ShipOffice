@@ -10,7 +10,7 @@ use super::gen::{generate, Layout, SeatKind};
 use super::{hash, tile, Face, Rng, Tile};
 use crate::model::{Activity, AgentRef, Event, EventKind};
 use crate::session::{Session, Status};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, SystemTime};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +215,9 @@ pub struct Shared {
     reporting: Vec<Tile>,
     /// tiles someone stands on or is walking to, refreshed every frame
     busy_tiles: Vec<(u32, Tile)>,
+    /// tiles nobody stands on: seats, the floor a workstation's drawing covers, the paths to
+    /// them, the bar and the door
+    keep_clear: HashSet<Tile>,
     bar_busy: Vec<(u32, Tag)>,
     chat_t: f32,
 }
@@ -259,6 +262,7 @@ impl World {
     /// The office for a project. `seed` comes from the project path, or from the config when pinned.
     pub fn new(project: &str, seed: u32) -> Self {
         let layout = generate(seed);
+        let clear = keep_clear(&layout);
         let s = Shared {
             desk_owner: vec![None; layout.desks.len()],
             lounge_owner: vec![None; layout.lounge.seats.len()],
@@ -269,6 +273,7 @@ impl World {
             game: None,
             reporting: Vec::new(),
             busy_tiles: Vec::new(),
+            keep_clear: clear,
             bar_busy: Vec::new(),
             chat_t: 2.0,
         };
@@ -401,11 +406,12 @@ impl World {
             } else {
                 Mode::Lounge
             };
-            if want == a.mode {
+            let deskless = matches!(want, Mode::Work(_)) && a.desk.is_none() && self.s.desk_owner.iter().any(|o| o.is_none());
+            if want == a.mode && !deskless {
                 continue;
             }
             // a new activity at the same desk only swaps the animation, no getting up
-            if let (Mode::Work(_), Mode::Work(act)) = (a.mode, want) {
+            if let (Mode::Work(_), Mode::Work(act), false) = (a.mode, want, deskless) {
                 a.mode = want;
                 if let Some(Step::Wait { anim, label, until: Until::Replanned, .. }) = a.q.back_mut() {
                     *anim = anim_for(act);
@@ -623,17 +629,78 @@ fn plan_work(a: &mut Avatar, s: &mut Shared, act: Activity, tool: Option<&(Strin
             }
             a.q.push_back(Step::Wait { anim: anim_for(act), sit: Some(SeatRef::Desk(d)), face: None, label, until: Until::Replanned, started: false, bubble: None, done: Done::None });
         }
-        None => a.q.push_back(Step::Wait { anim: Anim::Stand, sit: None, face: Some(Face::DR), label, until: Until::Replanned, started: false, bubble: None, done: Done::None }),
+        None => {
+            // every desk is taken: gather at the whiteboard, each on a tile of their own
+            let board = tile((s.layout.bx0 + s.layout.bx1) / 2, 1);
+            if let Some(t) = free_spot(a, s, board) {
+                a.q.push_back(Step::Walk { to: t, label: "Over to the whiteboard".into(), path: None, tag: Tag::None });
+            }
+            a.q.push_back(Step::Wait { anim: Anim::Stand, sit: None, face: Some(Face::UR), label, until: Until::Replanned, started: false, bubble: None, done: Done::None });
+        }
     }
 }
 
-/// Reports standing beside the lead's desk, facing the lead, then goes on a break.
+/// Floor nobody should stand on, worked out once per layout.
+fn keep_clear(o: &Layout) -> HashSet<Tile> {
+    let mut k = HashSet::new();
+    for d in &o.desks {
+        // the seat, the way in behind the chair, and the floor the desk's drawing covers
+        k.extend([tile(d.x, d.y), d.access(), tile(d.x - 1, d.y)]);
+    }
+    let lz = &o.lounge;
+    for q in &lz.seats {
+        k.extend([tile(q.x, q.y), q.access()]);
+    }
+    k.extend([lz.bar, lz.bar_queue, lz.pp_a, lz.pp_b, o.door]);
+    k
+}
+
+/// Whether `t` is free to stand on for `a`: open floor nobody else has claimed.
+fn standable(a: &Avatar, s: &Shared, t: Tile) -> bool {
+    !s.layout.blocked(t.x, t.y) && !s.keep_clear.contains(&t) && !s.reporting.contains(&t) && !s.busy_tiles.iter().any(|(id, b)| *id != a.id && *b == t)
+}
+
+/// The nearest tile to `from` (walking distance) that `a` can stand on alone, claimed for `a`
+/// at once so the next person planned in the same frame looks elsewhere.
+fn free_spot(a: &Avatar, s: &mut Shared, from: Tile) -> Option<Tile> {
+    let t = nearest_free(a, s, from)?;
+    s.busy_tiles.push((a.id, t));
+    Some(t)
+}
+
+fn nearest_free(a: &Avatar, s: &Shared, from: Tile) -> Option<Tile> {
+    let mut seen = HashSet::from([from]);
+    let mut q = VecDeque::from([from]);
+    while let Some(t) = q.pop_front() {
+        if standable(a, s, t) {
+            return Some(t);
+        }
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let n = tile(t.x + dx, t.y + dy);
+            if !s.layout.blocked(n.x, n.y) && seen.insert(n) {
+                q.push_back(n);
+            }
+        }
+    }
+    None
+}
+
+/// Reports standing across the lead's desk, facing the lead, then goes on a break.
 fn plan_report(a: &mut Avatar, s: &mut Shared, said: String) {
     release_desk(a, s);
-    let d = &s.layout.desks[0];
-    let cands = [(d.x - 1, d.y, Face::DR), (d.x - 1, d.ay, Face::DR), (d.x + 1, d.ay, Face::DL), (d.x, d.y + 1, Face::UR)];
-    let ok = |&(x, y, _): &(i32, i32, Face)| !s.layout.blocked(x, y) && !s.reporting.contains(&tile(x, y)) && !s.busy_tiles.iter().any(|(id, t)| *id != a.id && *t == tile(x, y));
-    let (x, y, face) = cands.iter().copied().find(|c| ok(c)).unwrap_or(cands[0]);
+    let (dx, dy) = (s.layout.desks[0].x, s.layout.desks[0].y);
+    let cands = [(dx + 1, dy + 1, Face::UL), (dx, dy + 1, Face::UR), (dx - 1, dy + 1, Face::UR)];
+    let pick = cands.iter().copied().find(|&(x, y, _)| standable(a, s, tile(x, y)));
+    let (x, y, face) = match pick {
+        Some(c) => {
+            s.busy_tiles.push((a.id, tile(c.0, c.1)));
+            c
+        }
+        None => match free_spot(a, s, tile(dx, dy + 1)) {
+            Some(t) => (t.x, t.y, if t.y > dy { Face::UR } else { Face::DL }),
+            None => (a.x.round() as i32, a.y.round() as i32, Face::UR),
+        },
+    };
     s.reporting.push(tile(x, y));
     a.q.push_back(Step::Walk { to: tile(x, y), label: "Reporting to the lead".into(), path: None, tag: Tag::None });
     a.q.push_back(Step::Act { anim: Anim::Stand, sit: None, face: Some(face), left: 3.2, started: false, bubble: Some((BubbleKind::Say, said)), label: "Reporting back".into(), tag: Tag::None, done: Done::Reported });
@@ -643,7 +710,13 @@ fn lead_break(a: &mut Avatar, s: &mut Shared) {
     let seat = free_lounge_seat(a, s, Some("couch")).or_else(|| free_lounge_seat(a, s, None));
     match seat {
         Some(i) => coffee_break(a, s, i, Some("Waiting for your input")),
-        None => a.q.push_back(Step::Wait { anim: Anim::Stand, sit: None, face: Some(Face::DR), label: "Waiting for you".into(), until: Until::Replanned, started: false, bubble: Some((BubbleKind::Think, "Waiting for your input".into())), done: Done::None }),
+        None => {
+            let lz = &s.layout.lounge;
+            if let Some(t) = free_spot(a, s, lz.pp_a) {
+                a.q.push_back(Step::Walk { to: t, label: "Stretching legs".into(), path: None, tag: Tag::None });
+            }
+            a.q.push_back(Step::Wait { anim: Anim::Stand, sit: None, face: Some(Face::DR), label: "Waiting for you".into(), until: Until::Replanned, started: false, bubble: Some((BubbleKind::Think, "Waiting for your input".into())), done: Done::None });
+        }
     }
 }
 
@@ -749,7 +822,8 @@ fn idle(a: &mut Avatar, s: &mut Shared, idle_count: usize, first_idle: Option<u3
         let x = s.layout.l0 + s.rng.below(4) as i32;
         let y = 1 + s.rng.below((s.layout.h - 2) as usize) as i32;
         let t = tile(x, y);
-        if !s.layout.blocked(x, y) && !s.busy_tiles.iter().any(|(id, b)| *id != a.id && *b == t) && !keep.contains(&t) {
+        if standable(a, s, t) && !keep.contains(&t) {
+            s.busy_tiles.push((a.id, t));
             a.q.push_back(Step::Walk { to: t, label: "Stretching legs".into(), path: None, tag: Tag::None });
             break;
         }
@@ -1019,6 +1093,41 @@ mod tests {
         assert_eq!(two_at_bar, 0, "one person at the coffee machine at a time");
         let lead_av = w.avatars.iter().find(|a| a.lead).unwrap();
         assert_eq!(lead_av.mode, Mode::WaitForUser);
+    }
+
+    /// More helpers than desks: nobody shares a tile or stands inside a workstation.
+    #[test]
+    fn everyone_gets_their_own_spot() {
+        for seed in [3u32, 7, 11, 19] {
+            let key = SessionKey { harness: "t", id: "s".into() };
+            let mut session = Session::new(key, "Test", SystemTime::now());
+            let mut w = World::new("proj", seed);
+            let lead = AgentRef::Lead;
+            session.apply(&ev(lead.clone(), EventKind::UserPrompt { text: "go".into() }));
+            session.apply(&ev(lead.clone(), EventKind::ToolCall { call_id: "1".into(), name: "Read".into(), summary: "a.rs".into() }));
+            let n = w.s.layout.desks.len() + 4;
+            for i in 0..n {
+                session.apply(&ev(lead.clone(), EventKind::SubagentStart { agent_id: format!("s{i}"), description: format!("task {i}"), kind: None }));
+            }
+            for frame in 0..(60 * 90) {
+                if frame == 60 * 40 {
+                    for i in 0..3 {
+                        session.apply(&ev(lead.clone(), EventKind::SubagentEnd { agent_id: format!("s{i}") }));
+                    }
+                }
+                w.sync(&session);
+                w.step(1.0 / 60.0);
+                if frame < 60 * 25 || frame % 30 != 0 {
+                    continue;
+                }
+                let mut spots = HashSet::new();
+                for a in w.avatars.iter().filter(|a| a.anim != Anim::Walk && a.seated.is_none() && a.alpha >= 1.0 && !a.leaving) {
+                    let t = tile(a.x.round() as i32, a.y.round() as i32);
+                    assert!(spots.insert(t), "seed {seed} frame {frame}: two people on {t:?}");
+                    assert!(!w.s.keep_clear.contains(&t) || w.s.layout.lounge.pp_a == t || w.s.layout.lounge.pp_b == t || w.s.layout.lounge.bar == t || w.s.layout.lounge.bar_queue == t, "seed {seed} frame {frame}: {} stands inside a workstation at {t:?}", a.name);
+                }
+            }
+        }
     }
 
     #[test]
