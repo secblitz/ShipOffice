@@ -3,14 +3,28 @@
 //! Adapters are passive. They only read files the harness already writes, never talk to the
 //! harness, and never write anywhere near its data.
 
+pub mod aider;
+pub mod amp;
 pub mod claude;
+pub mod cline;
 pub mod codex;
+pub mod copilot;
+pub mod crush;
+pub mod cursor;
+pub mod droid;
+pub mod gemini;
+pub mod goose;
+pub mod opencode;
+pub mod qwen;
 
 use crate::model::{AgentRef, Event, SessionKey};
+use rusqlite::{Connection, OpenFlags};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// One thing to watch: usually a transcript file, sometimes a database.
 #[derive(Debug, Clone)]
@@ -40,7 +54,23 @@ pub trait SourceReader: Send {
 
 /// Every adapter this build knows about, in the order they show up in settings.
 pub fn all() -> Vec<Box<dyn Adapter>> {
-    vec![Box::new(claude::ClaudeCode), Box::new(codex::Codex::default())]
+    vec![
+        Box::new(claude::ClaudeCode),
+        Box::new(codex::Codex::default()),
+        Box::new(opencode::OpenCode::opencode()),
+        Box::new(opencode::OpenCode::kilo()),
+        Box::new(gemini::GeminiCli::default()),
+        Box::new(qwen::QwenCode),
+        Box::new(copilot::CopilotCli),
+        Box::new(cline::Cline::cline()),
+        Box::new(cline::Cline::roo()),
+        Box::new(goose::Goose::default()),
+        Box::new(crush::Crush::default()),
+        Box::new(droid::Droid::default()),
+        Box::new(cursor::Cursor::default()),
+        Box::new(amp::Amp),
+        Box::new(aider::Aider),
+    ]
 }
 
 /// The user's home directory, or an empty path when there is none.
@@ -55,6 +85,119 @@ pub fn env_path(var: &str) -> Option<PathBuf> {
 
 pub fn modified(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// `$XDG_DATA_HOME`, else `~/.local/share`. Several harnesses use it on every OS, macOS and Windows included.
+pub fn xdg_data() -> PathBuf {
+    env_path("XDG_DATA_HOME").unwrap_or_else(|| home().join(".local").join("share"))
+}
+
+/// Unix milliseconds as a time.
+pub fn from_ms(ms: i64) -> SystemTime {
+    UNIX_EPOCH + Duration::from_millis(ms.max(0) as u64)
+}
+
+/// A JSON timestamp in Unix seconds or milliseconds (harnesses mix them), or RFC 3339.
+pub fn any_ts(v: &serde_json::Value) -> Option<SystemTime> {
+    if let Some(n) = v.as_f64() {
+        let ms = if n > 1e11 { n } else { n * 1000.0 };
+        return Some(from_ms(ms as i64));
+    }
+    let s = v.as_str()?;
+    time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok().map(SystemTime::from)
+}
+
+/// A live harness database opened read-only, shared by the readers of every session in it.
+///
+/// The connection is opened lazily and dropped on any error, so a database that is being
+/// created, replaced or briefly locked is simply tried again on the next poll. Queries run in
+/// autocommit mode, so no read snapshot outlives a call and the writer can still checkpoint.
+pub struct Db {
+    path: PathBuf,
+    conn: Mutex<Option<Connection>>,
+}
+
+impl Db {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path, conn: Mutex::new(None) }
+    }
+
+    /// Runs `f` on the connection; `None` when the database can't be read right now.
+    pub fn with<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Option<T> {
+        let mut guard = self.conn.lock().ok()?;
+        if guard.is_none() {
+            if !self.path.is_file() {
+                return None;
+            }
+            // never `immutable=1`: the harness is writing while we read
+            let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+            let c = Connection::open_with_flags(&self.path, flags).ok()?;
+            c.busy_timeout(Duration::from_millis(250)).ok()?;
+            *guard = Some(c);
+        }
+        let r = f(guard.as_ref()?);
+        if r.is_err() {
+            *guard = None;
+        }
+        r.ok()
+    }
+
+    /// `PRAGMA data_version` changes whenever another connection commits, so readers only
+    /// query again after something was written.
+    pub fn version(&self) -> Option<i64> {
+        self.with(|c| c.query_row("PRAGMA data_version", [], |r| r.get(0)))
+    }
+
+    pub fn has_table(&self, name: &str) -> bool {
+        self.with(|c| c.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1", [name], |r| r.get::<_, i64>(0)))
+            .is_some_and(|n| n > 0)
+    }
+}
+
+/// One shared [`Db`] per database file, kept by the adapter across scans.
+#[derive(Default)]
+pub struct DbCache(Mutex<HashMap<PathBuf, Arc<Db>>>);
+
+impl DbCache {
+    pub fn get(&self, path: &Path) -> Arc<Db> {
+        let mut m = self.0.lock().unwrap();
+        m.entry(path.to_path_buf()).or_insert_with(|| Arc::new(Db::new(path.to_path_buf()))).clone()
+    }
+}
+
+/// The newest change to a SQLite database: the main file or its write-ahead log.
+pub fn db_modified(db: &Path) -> Option<SystemTime> {
+    let mut wal = db.as_os_str().to_owned();
+    wal.push("-wal");
+    modified(db).max(modified(Path::new(&wal)))
+}
+
+/// A JSON file the harness rewrites whole. [`JsonFile::read`] returns the contents when the
+/// file's size or mtime changed and it parses; a half-written or briefly missing file gives
+/// `None` and is tried again next time.
+pub struct JsonFile {
+    path: PathBuf,
+    seen: Option<(u64, SystemTime)>,
+}
+
+/// Whole-file JSON bigger than this is not parsed.
+pub const MAX_JSON: u64 = 64 * 1024 * 1024;
+
+impl JsonFile {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path, seen: None }
+    }
+
+    pub fn read(&mut self) -> Option<serde_json::Value> {
+        let m = std::fs::metadata(&self.path).ok()?;
+        let stamp = (m.len(), m.modified().ok()?);
+        if self.seen == Some(stamp) || m.len() > MAX_JSON {
+            return None;
+        }
+        let v = serde_json::from_slice(&std::fs::read(&self.path).ok()?).ok()?;
+        self.seen = Some(stamp);
+        Some(v)
+    }
 }
 
 /// Follows an append-only JSONL file by byte offset.
