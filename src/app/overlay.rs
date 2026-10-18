@@ -33,7 +33,7 @@ pub struct State {
     press: Option<Point>,
     last: Option<Point>,
     dragged: bool,
-    /// this drag turns the view (left button) rather than panning (right, middle, shift + left)
+    /// this drag turns the view (right button, or shift + left) rather than panning (left, middle)
     orbit: bool,
     /// the press was the left button (only it clicks)
     left: bool,
@@ -83,14 +83,14 @@ impl canvas::Program<Message> for Overlay<'_> {
                 st.last = cursor.position();
                 st.dragged = false;
                 st.left = *b == mouse::Button::Left;
-                st.orbit = st.left && !st.shift;
+                st.orbit = *b == mouse::Button::Right || (st.left && st.shift);
                 Some(Action::capture())
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Right | mouse::Button::Middle)) => {
                 st.press = None;
                 st.last = None;
-                st.dragged = false;
-                None
+                let turned = std::mem::take(&mut st.dragged) && st.orbit;
+                turned.then(|| Action::publish(Message::OrbitEnd).and_capture())
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                 let was = st.press.take();
@@ -214,7 +214,22 @@ fn wrap(text: &str, size: f32, max: f32) -> Vec<String> {
     let mut cur = String::new();
     let mut cur_w = 0.0;
     let space = measure(" ", size, UI);
-    for w in text.split_whitespace() {
+    // words wider than a line are cut into pieces that fit
+    let pieces = text.split_whitespace().flat_map(|w| {
+        let mut out: Vec<String> = Vec::new();
+        let mut piece = String::new();
+        for ch in w.chars() {
+            piece.push(ch);
+            if piece.chars().count() > 1 && measure(&piece, size, UI) > max {
+                piece.pop();
+                out.push(std::mem::replace(&mut piece, ch.to_string()));
+            }
+        }
+        out.push(piece);
+        out
+    });
+    for w in pieces {
+        let w = w.as_str();
         let ww = measure(w, size, UI);
         if cur.is_empty() {
             cur = w.to_owned();

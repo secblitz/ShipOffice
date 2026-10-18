@@ -57,8 +57,6 @@ pub enum Fx {
     Glass,
     /// transparent at the top, opaque at the bottom: haze bands and fades
     Ramp,
-    /// a gull, wings up or down
-    Bird(bool),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -86,6 +84,8 @@ pub struct DrawList {
     pub layers: Vec<Layer>,
     /// clear colour behind the office, linear-free sRGB bytes
     pub background: [u8; 3],
+    /// the city drawn behind everything, when the backdrop is on
+    pub sky: Option<city::Sky>,
 }
 
 /// What the office looks at and how close. Port of the prototype's `cam`.

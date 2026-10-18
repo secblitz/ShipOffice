@@ -1,6 +1,7 @@
 //! The office's wgpu pass, plugged into iced through the shader widget.
 
 use super::assets::{self, decode, meta, mips, premultiply, split_sheet, MAX_SHADE};
+use super::city::Sky;
 use super::{DrawList, Fx, Instance, TexKey};
 use iced::wgpu;
 use iced::widget::shader::{self, Viewport};
@@ -36,6 +37,104 @@ pub struct Pipeline {
     runs: Vec<(TexKey, u32, u32)>,
     srgb: bool,
     frame: u64,
+    city: City,
+}
+
+/// The sky pass: one triangle over the stage, ray casting the city (sky.wgsl).
+struct City {
+    pipeline: wgpu::RenderPipeline,
+    uniforms: wgpu::Buffer,
+    uniforms_bind: wgpu::BindGroup,
+    tex_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    /// day and night textures, made the first time each is shown
+    tex: [Option<wgpu::BindGroup>; 2],
+    /// this frame's camera, if the city is on
+    now: Option<(Sky, usize)>,
+}
+
+impl City {
+    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("city"), source: wgpu::ShaderSource::Wgsl(include_str!("sky.wgsl").into()) });
+        let uniforms_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("city uniforms"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            }],
+        });
+        let tex_entry = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            count: None,
+        };
+        let tex_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("city textures"),
+            entries: &[tex_entry(0), tex_entry(1), tex_entry(2), wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None }],
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("city"), bind_group_layouts: &[&uniforms_layout, &tex_layout], push_constant_ranges: &[] });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("city"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs"),
+                targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("city uniforms"), size: std::mem::size_of::<Sky>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let uniforms_bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("city uniforms"), layout: &uniforms_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() }] });
+        // the panoramas wrap around the horizon and the lots tile; anisotropy keeps the street
+        // sharp when it is seen at a slant
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("city"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            anisotropy_clamp: 8,
+            ..Default::default()
+        });
+        Self { pipeline, uniforms, uniforms_bind, tex_layout, sampler, tex: [None, None], now: None }
+    }
+
+    fn textures(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, night: usize) -> Option<u64> {
+        if self.tex[night].is_some() {
+            return Some(0);
+        }
+        let time = ["day", "night"][night];
+        let mut bytes = 0;
+        let mut views = Vec::new();
+        for (layer, levels) in [("far", 6), ("near", 6), ("ground", 9)] {
+            let mut img = decode(&format!("city/{layer}-{time}.webp"))?;
+            premultiply(&mut img);
+            let (v, b) = upload(device, queue, &img, levels);
+            bytes += b;
+            views.push(v);
+        }
+        self.tex[night] = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("city textures"),
+            layout: &self.tex_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&views[0]) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&views[1]) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[2]) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ],
+        }));
+        Some(bytes)
+    }
 }
 
 #[repr(C)]
@@ -116,7 +215,8 @@ impl shader::Pipeline for Pipeline {
         let zero = device.create_texture(&tex_desc(1, 1, 1)).create_view(&Default::default());
         let capacity = 1024;
         let instances = device.create_buffer(&wgpu::BufferDescriptor { label: Some("office instances"), size: capacity * std::mem::size_of::<Instance>() as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        Self { pipeline, globals, globals_bind, tex_layout, sampler, zero, textures: HashMap::new(), instances, capacity, runs: Vec::new(), srgb: format.is_srgb(), frame: 0 }
+        let city = City::new(device, format);
+        Self { pipeline, globals, globals_bind, tex_layout, sampler, zero, textures: HashMap::new(), instances, capacity, runs: Vec::new(), srgb: format.is_srgb(), frame: 0, city }
     }
 
     fn trim(&mut self) {
@@ -165,7 +265,6 @@ fn fx_image(fx: Fx) -> RgbaImage {
         Fx::Dot => (32, 32),
         Fx::Glass => (16, 64),
         Fx::Ramp => (4, 64),
-        Fx::Bird(_) => (32, 20),
     };
     RgbaImage::from_fn(w, h, |x, y| {
         let (u, v) = ((x as f32 + 0.5) / w as f32 * 2.0 - 1.0, (y as f32 + 0.5) / h as f32 * 2.0 - 1.0);
@@ -182,21 +281,6 @@ fn fx_image(fx: Fx) -> RgbaImage {
             Fx::Ramp => {
                 let t = (y as f32 + 0.5) / h as f32;
                 t * t * (3.0 - 2.0 * t)
-            }
-            Fx::Bird(up) => {
-                // an M (wings up) or a flattened W (wings down), 2 px wide with a soft edge
-                let pts: [(f32, f32); 5] = if up { [(1.0, 9.0), (8.0, 3.0), (16.0, 11.0), (24.0, 3.0), (31.0, 9.0)] } else { [(1.0, 12.0), (8.0, 16.0), (16.0, 11.0), (24.0, 16.0), (31.0, 12.0)] };
-                let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-                let d = pts
-                    .windows(2)
-                    .map(|s| {
-                        let ((ax, ay), (bx, by)) = (s[0], s[1]);
-                        let (dx, dy) = (bx - ax, by - ay);
-                        let t = (((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
-                        ((px - ax - t * dx).powi(2) + (py - ay - t * dy).powi(2)).sqrt()
-                    })
-                    .fold(f32::MAX, f32::min);
-                (1.0 - (d - 1.0) / 1.2).clamp(0.0, 1.0)
             }
             Fx::Glass => {
                 let edge = x == 0 || x == w - 1 || y == 0 || y == h - 1;
@@ -298,6 +382,15 @@ impl shader::Primitive for Primitive {
             _pad: [0.0; 2],
         };
         queue.write_buffer(&p.globals, 0, bytemuck::bytes_of(&g));
+        p.city.now = None;
+        if let Some(mut sky) = self.list.sky {
+            sky.lens[3] = if p.srgb { 1.0 } else { 0.0 };
+            let night = (sky.lens[2] > 0.5) as usize;
+            if p.city.textures(device, queue, night).is_some() {
+                queue.write_buffer(&p.city.uniforms, 0, bytemuck::bytes_of(&sky));
+                p.city.now = Some((sky, night));
+            }
+        }
         p.runs.clear();
         let items = &self.list.items;
         if items.len() as u64 > p.capacity {
@@ -320,6 +413,14 @@ impl shader::Primitive for Primitive {
     }
 
     fn draw(&self, p: &Pipeline, pass: &mut wgpu::RenderPass<'_>) -> bool {
+        if let Some((_, night)) = p.city.now {
+            if let Some(tex) = &p.city.tex[night] {
+                pass.set_pipeline(&p.city.pipeline);
+                pass.set_bind_group(0, &p.city.uniforms_bind, &[]);
+                pass.set_bind_group(1, tex, &[]);
+                pass.draw(0..3, 0..1);
+            }
+        }
         if p.runs.is_empty() {
             return true;
         }

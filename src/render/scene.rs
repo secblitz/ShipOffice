@@ -3,12 +3,12 @@
 
 use super::assets::{meta, sheet_key};
 use super::paint::CUTAWAY;
-use super::city::{self, City, Screen};
+use super::city::{self, City, Sky};
 use super::view::{wall_height, View, Wall};
 use super::{DrawList, Fx, Instance, Layer, TexKey};
-use crate::office::gen::{Atlas, Prop, SeatKind};
+use crate::office::gen::{Atlas, Layout, Prop, SeatKind};
 use crate::office::world::{Anim, Avatar, GameState, SeatRef, World};
-use crate::office::{TH, TW};
+use crate::office::{Face, TH, TW};
 
 /// Sprite scale and how far below the tile centre the feet sit, per sheet family.
 fn sheet_scale(base: &str) -> (f32, f32) {
@@ -113,8 +113,8 @@ pub struct Inputs<'a> {
     pub anim_fps: f32,
     /// wall-clock seconds, for ambient motion
     pub now: f32,
-    /// the city around the tower, and where the screen is (it is laid out in screen space)
-    pub city: Option<(City, Screen)>,
+    /// the city around the tower, and its camera
+    pub city: Option<(City, Sky)>,
 }
 
 fn uv_rect(x: u32, y: u32, w: u32, h: u32, size: (u32, u32)) -> [f32; 4] {
@@ -124,16 +124,16 @@ fn uv_rect(x: u32, y: u32, w: u32, h: u32, size: (u32, u32)) -> [f32; 4] {
 
 const FULL: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
-/// The prop's art rect, scale, horizontal centre and baseline, like `propBox`: centred on its
-/// footprint, standing on the footprint's lowest corner on screen.
+/// The prop's art rect, scale, horizontal centre and baseline, like `propBox`. The art's base is
+/// drawn for the classic angle, where it reaches half a diamond below the footprint's centre;
+/// anchoring there, rather than at whichever corner is lowest, keeps it on the floor at any angle.
 fn prop_box(p: &Prop, v: &View) -> Option<(&'static str, [u32; 4], f32, f32, f32)> {
     let &(file, rect) = meta().items.get(p.name)?;
     let (w, h) = (rect[2] as f32, rect[3] as f32);
     let s = prop_width(p.name).map(|pw| pw / w).unwrap_or_else(|| prop_height(p.name).unwrap_or(50.0) / h);
     let (x, y, fx, fy) = (p.x as f32, p.y as f32, p.fx as f32, p.fy as f32);
-    let corners = [v.floor(x, y), v.floor(x + fx, y), v.floor(x, y + fy), v.floor(x + fx, y + fy)];
-    let cx = v.floor(x + fx / 2.0, y + fy / 2.0).0;
-    let by = corners.iter().map(|c| c.1).fold(f32::MIN, f32::max) - if p.fx > 1 || p.fy > 1 { 6.0 } else { 5.0 };
+    let (cx, cy) = v.floor(x + fx / 2.0, y + fy / 2.0);
+    let by = cy + (fx + fy) * TH / 4.0 - if p.fx > 1 || p.fy > 1 { 6.0 } else { 5.0 };
     Some((file, rect, s, cx, by))
 }
 
@@ -146,8 +146,35 @@ fn prop_depth(p: &Prop, v: &View) -> f32 {
     near + hint
 }
 
-/// The prop as a billboard quad and its screen rect.
-fn prop_quad(p: &Prop, v: &View) -> Option<(TexKey, Instance, [f32; 4])> {
+/// Props with a front that stand against a wall: which way their front art faces on screen
+/// unmirrored, and which way their back art's back panel faces (true is down-right).
+fn sides(name: &str) -> Option<(bool, bool)> {
+    match name {
+        "coffee" | "cooler" | "server" => Some((false, true)),
+        "fridge" | "arcade" => Some((true, true)),
+        "bookshelf" => Some((false, false)),
+        _ => None,
+    }
+}
+
+/// Away from the wall a prop stands against, into the room.
+fn wall_front(p: &Prop, o: &Layout) -> Option<Face> {
+    if p.y == 0 {
+        Some(Face::DL)
+    } else if p.x == 0 {
+        Some(Face::DR)
+    } else if p.y + p.fy == o.h {
+        Some(Face::UR)
+    } else if p.x + p.fx == o.w {
+        Some(Face::UL)
+    } else {
+        None
+    }
+}
+
+/// The prop as a billboard quad and its screen rect. Wall props turn to face the room from any
+/// side, and show their back when their front points away from you.
+fn prop_quad(p: &Prop, v: &View, o: &Layout) -> Option<(TexKey, Instance, [f32; 4])> {
     let m = meta();
     if p.atlas == Atlas::Desk {
         let (cx, cy) = v.floor(p.x as f32 + 0.5, p.y as f32 + 0.5);
@@ -156,10 +183,20 @@ fn prop_quad(p: &Prop, v: &View) -> Option<(TexKey, Instance, [f32; 4])> {
         let inst = Instance::rect(cx - dw / 2.0, cy + lift - dh, dw, dh, FULL, v.mirrored());
         return Some((TexKey::Atlas("desk_empty.webp"), inst, [cx - dw / 2.0 + 12.0, cy + lift - dh * 0.55, dw - 24.0, dh * 0.55]));
     }
-    let (file, r, s, cx, by) = prop_box(p, v)?;
+    let (mut file, mut r, s, cx, by) = prop_box(p, v)?;
+    let mut flip = p.flip != v.mirrored();
+    if let (Some((front_right, back_right)), Some(f)) = (sides(p.name), wall_front(p, o)) {
+        let (toward, right) = v.facing(f);
+        if toward {
+            flip = right != front_right;
+        } else if let Some(&(bf, br)) = m.items.get(&format!("{}_back", p.name)) {
+            // the back panel faces the other way from the front
+            (file, r, flip) = (bf, br, !right != back_right);
+        }
+    }
     let (w, h) = (r[2] as f32 * s, r[3] as f32 * s);
     let uv = uv_rect(r[0], r[1], r[2], r[3], m.atlas_size[file]);
-    let inst = Instance::rect(cx - w / 2.0, by - h, w, h, uv, p.flip != v.mirrored());
+    let inst = Instance::rect(cx - w / 2.0, by - h, w, h, uv, flip);
     Some((TexKey::Atlas(file), inst, [cx - w / 2.0, by - h, w, h]))
 }
 
@@ -169,9 +206,7 @@ pub fn build(inp: &Inputs) -> Scene {
     let o = &w.s.layout;
     let m = meta();
     let mut sc = Scene::default();
-    if let Some((c, s)) = &inp.city {
-        city::backdrop(&mut sc.list.items, *c, s, v, inp.now);
-    }
+    sc.list.sky = inp.city.map(|(_, s)| s);
     // our floor starts here; the floors below are copied from it
     let office_start = sc.list.items.len();
     let (ww, hh, zt) = (o.w as f32, o.h as f32, wall_height());
@@ -224,7 +259,7 @@ pub fn build(inp: &Inputs) -> Scene {
         if p.atlas == Atlas::Desk && o.desks.iter().position(|d| d.x == p.x && d.y == p.y).is_some_and(|i| occupied.contains(&i)) {
             continue;
         }
-        let Some((key, mut inst, rect)) = prop_quad(p, v) else { continue };
+        let Some((key, mut inst, rect)) = prop_quad(p, v, o) else { continue };
         let d = prop_depth(p, v);
         if inp.hover == Some(Hit::Prop(pi)) {
             inst.glow = 0.16;
@@ -321,16 +356,13 @@ pub fn build(inp: &Inputs) -> Scene {
     items.sort_by(|p, q| p.0.total_cmp(&q.0));
     sc.list.items.extend(items.into_iter().map(|(_, k, i)| (k, i)));
     // the tower goes on below: two dimmer floors with our layout, no people, no board
-    if let Some((c, s)) = &inp.city {
+    if let Some((c, _)) = &inp.city {
         let board = inp.board.map(|l| l.id);
-        let before = sc.list.items.len();
-        city::floors_below(&mut sc.list.items, office_start, *c, v, |k| match k {
+        city::tower(&mut sc.list.items, office_start, *c, v, o, |k| match k {
             TexKey::Sheet(_) | TexKey::Fx(Fx::Shadow | Fx::Ring | Fx::Dot) => false,
             TexKey::Layer(id) => Some(*id) != board,
             _ => true,
         });
-        let copied = sc.list.items.len() - before;
-        city::ground_fade(&mut sc.list.items, office_start + copied, *c, s);
     }
     // walls between you and the room are cut down to a skirting, drawn over everything
     if let Some(st) = inp.statics {

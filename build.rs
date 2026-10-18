@@ -17,13 +17,13 @@ fn main() {
             }
         }
     }
-    for k in ["props", "tiles", "cafe", "deskEmpty"] {
+    for k in ["props", "propsBack", "tiles", "cafe", "deskEmpty"] {
         if let Some(f) = meta[k]["file"].as_str() {
             files.push(f.to_owned());
         }
     }
     // the city backdrop: skyline and street, by day and by night
-    for layer in ["far", "near"] {
+    for layer in ["far", "near", "ground"] {
         for time in ["day", "night"] {
             files.push(format!("city/{layer}-{time}.webp"));
         }

@@ -20,11 +20,12 @@ type El<'a> = Element<'a, Message>;
 
 // Advanced shaping everywhere: basic shaping drops glyphs of text that changes every frame
 fn t<'a>(s: impl text::IntoFragment<'a>, size: f32, color: Color) -> text::Text<'a> {
-    text(s).size(size).color(color).shaping(text::Shaping::Advanced)
+    // a word wider than its box (a long tool name, a path) breaks between letters instead of overflowing
+    text(s).size(size).color(color).shaping(text::Shaping::Advanced).wrapping(text::Wrapping::WordOrGlyph)
 }
 
 fn mono<'a>(s: impl text::IntoFragment<'a>, size: f32, color: Color) -> text::Text<'a> {
-    text(s).size(size).color(color).font(MONO).shaping(text::Shaping::Advanced)
+    text(s).size(size).color(color).font(MONO).shaping(text::Shaping::Advanced).wrapping(text::Wrapping::WordOrGlyph)
 }
 
 fn dot<'a>(c: Color, d: f32) -> El<'a> {
@@ -271,7 +272,7 @@ impl App {
             crew_btn,
             tool(Icon::Follow, "Follow the selected agent  F", Message::Follow, self.follow),
             sep(),
-            tool(Icon::TurnLeft, "Turn left  Q · drag to turn and tilt", Message::Turn(std::f32::consts::FRAC_PI_2), false),
+            tool(Icon::TurnLeft, "Turn left  Q · right-drag to turn and tilt", Message::Turn(std::f32::consts::FRAC_PI_2), false),
             tool(Icon::TurnRight, "Turn right  E", Message::Turn(-std::f32::consts::FRAC_PI_2), false),
         ]
         .spacing(2)
@@ -572,9 +573,11 @@ impl App {
         let accents = row(style::ACCENTS.iter().map(|&a| -> El {
             let col = Color::from_rgb8((a >> 16) as u8, (a >> 8) as u8, a as u8);
             let sel = style::to_hex(pal.accent) == style::to_hex(col);
-            button(Space::new().width(18).height(18))
+            // the chosen accent carries a check; hover only brightens
+            let mark: El = if sel { icon(Icon::Check, 12.0, style::on(col)) } else { Space::new().into() };
+            button(container(mark).center(18))
                 .padding(0)
-                .style(move |_, st| button::Style { background: Some(iced::Background::Color(col)), border: iced::Border { color: if sel { pal.text } else if matches!(st, button::Status::Hovered) { alpha(pal.text, 0.4) } else { Color::TRANSPARENT }, width: 2.0, radius: 999.0.into() }, ..Default::default() })
+                .style(move |_, st| button::Style { background: Some(iced::Background::Color(if matches!(st, button::Status::Hovered) && !sel { style::mix(col, Color::WHITE, 0.18) } else { col })), border: iced::border::rounded(999), ..Default::default() })
                 .on_press(Message::Setting(Setting::Accent(a)))
                 .into()
         }))
@@ -692,7 +695,7 @@ impl App {
         };
         let fps = self.dropdown("fps", label(format!("{} fps", cfg.anim_fps)), [12u32, 16, 24].into_iter().map(|v| (plain(fps_name(v)), Message::Setting(Setting::AnimFps(v)), v == cfg.anim_fps)).collect(), 110.0);
 
-        let keys = [("Drag", "Turn and tilt"), ("Right-drag", "Pan"), ("Scroll", "Zoom"), ("Q  E", "Turn a quarter"), ("R", "Classic angle"), ("N", "New office"), ("F", "Follow"), ("Tab", "Next agent"), ("1–9", "Switch tab"), ("Esc", "Close")];
+        let keys = [("Drag", "Pan"), ("Right-drag", "Turn and tilt"), ("Scroll", "Zoom"), ("Q  E", "Turn a quarter"), ("R", "Classic angle"), ("N", "New office"), ("F", "Follow"), ("Tab", "Next agent"), ("1–9", "Switch tab"), ("Esc", "Close")];
         let key_rows = keys.iter().map(|(k, v)| -> El { row![t(*v, 12.0, pal.muted).width(Fill), container(mono(*k, 11.0, pal.text)).padding([2, 7]).style(style::inset())].align_y(Alignment::Center).padding([5, 12]).into() }).collect();
         let path = crate::config::Config::path().map(|p| tidy_path(&p)).unwrap_or_default();
         column![
@@ -743,7 +746,7 @@ fn group<'a>(title: &'a str, rows: Vec<El<'a>>) -> El<'a> {
 fn chip<'a>(q: style::Pal) -> El<'a> {
     container(row![dot(q.accent, 6.0), dot(q.working, 6.0), dot(q.waiting, 6.0)].spacing(3))
         .padding([4, 6])
-        .style(move |_| container::Style { background: Some(iced::Background::Color(q.surface)), border: iced::Border { color: alpha(q.text, 0.15), width: 1.0, radius: 6.0.into() }, ..Default::default() })
+        .style(move |_| container::Style { background: Some(iced::Background::Color(q.surface)), border: iced::border::rounded(6), ..Default::default() })
         .into()
 }
 

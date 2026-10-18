@@ -1322,5 +1322,48 @@
    ]
   }
  },
- "pingpongCleaned": 540
+ "pingpongCleaned": 540,
+ "propsBack": {
+  "file": "props_back.webp",
+  "w": 482,
+  "h": 128,
+  "items": {
+   "coffee_back": [
+    0,
+    0,
+    97,
+    121
+   ],
+   "cooler_back": [
+    99,
+    0,
+    49,
+    119
+   ],
+   "fridge_back": [
+    150,
+    0,
+    76,
+    108
+   ],
+   "bookshelf_back": [
+    228,
+    0,
+    70,
+    127
+   ],
+   "server_back": [
+    300,
+    0,
+    85,
+    128
+   ],
+   "arcade_back": [
+    387,
+    0,
+    93,
+    126
+   ]
+  }
+ }
 }

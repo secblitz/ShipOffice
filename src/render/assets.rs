@@ -67,7 +67,7 @@ pub fn meta() -> &'static Meta {
             );
         }
         let mut items = HashMap::new();
-        for (atlas, file) in [("props", "props.webp"), ("cafe", "cafe.webp")] {
+        for (atlas, file) in [("props", "props.webp"), ("cafe", "cafe.webp"), ("propsBack", "props_back.webp")] {
             for (k, r) in v[atlas]["items"].as_object().into_iter().flatten() {
                 items.insert(k.clone(), (file, rect(r)));
             }
@@ -77,6 +77,7 @@ pub fn meta() -> &'static Meta {
         let atlas_size = HashMap::from([
             ("props.webp", (num(&v["props"]["w"]), num(&v["props"]["h"]))),
             ("cafe.webp", (num(&v["cafe"]["w"]), num(&v["cafe"]["h"]))),
+            ("props_back.webp", (num(&v["propsBack"]["w"]), num(&v["propsBack"]["h"]))),
             ("desk_empty.webp", desk_empty),
         ]);
         Meta { anims, items, tiles, desk_empty, atlas_size }

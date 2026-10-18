@@ -872,15 +872,20 @@ impl App {
             Backdrop::Night => Some(true),
             Backdrop::City => Some(!style::p().light),
         };
-        let screen = crate::render::city::Screen { scale: self.cam.scale(), origin: self.cam.origin(), w: self.stage.width, h: self.stage.height };
-        let city = night.map(|night| (crate::render::city::City { night }, screen));
         let Some(t) = self.tabs.get(self.active) else {
             self.scene = Scene::default();
             return;
         };
+        let view = self.view_of(t);
+        let pan = (self.cam.cx - self.cam.home.0, self.cam.cy - self.cam.home.1);
+        let (aspect, now) = (self.stage.width / self.stage.height.max(1.0), self.started.elapsed().as_secs_f32());
+        let city = night.map(|night| {
+            let c = crate::render::city::City { night };
+            (c, crate::render::city::sky(c, &view, aspect, self.cam.z, pan, now))
+        });
         self.scene = scene::build(&scene::Inputs {
             world: &t.world,
-            view: &self.view_of(t),
+            view: &view,
             statics: t.statics.as_ref(),
             board: t.board.as_ref(),
             hover: self.hover,

@@ -239,9 +239,9 @@ pub fn dot(c: Color) -> impl Fn(&Theme) -> container::Style {
     fill(c, 999.0)
 }
 
-pub fn ring(c: Color, selected: bool) -> impl Fn(&Theme) -> container::Style {
-    let edge = if selected { p().text } else { Color::TRANSPARENT };
-    move |_| container::Style { background: Some(Background::Color(c)), border: Border { color: edge, width: 2.0, radius: 999.0.into() }, ..Default::default() }
+/// A colour swatch; the chosen one is marked by its size, not an outline.
+pub fn ring(c: Color, _selected: bool) -> impl Fn(&Theme) -> container::Style {
+    fill(c, 999.0)
 }
 
 pub fn tinted(c: Color) -> impl Fn(&Theme) -> container::Style {
@@ -272,15 +272,14 @@ pub fn trigger(open: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     let p = p();
     move |_, status| {
         let bg = if open || hot(status) { mix(p.raised, p.text, 0.06) } else { p.raised };
-        let ring = if open { alpha(p.accent, 0.9) } else { Color::TRANSPARENT };
-        button::Style { background: Some(Background::Color(bg)), text_color: p.text, border: Border { color: ring, width: 1.5, radius: 9.0.into() }, ..Default::default() }
+        button::Style { background: Some(Background::Color(bg)), text_color: p.text, border: border::rounded(9), ..Default::default() }
     }
 }
 
 /// The floating panel a dropdown opens.
 pub fn menu_panel() -> impl Fn(&Theme) -> container::Style {
     let (p, sh) = (p(), shadow(1.4));
-    move |_| container::Style { background: Some(Background::Color(mix(p.surface, p.raised, 0.5))), border: Border { color: alpha(p.text, 0.08), width: 1.0, radius: 12.0.into() }, shadow: sh, text_color: Some(p.text), ..Default::default() }
+    move |_| container::Style { background: Some(Background::Color(mix(p.surface, p.raised, 0.5))), border: border::rounded(12), shadow: sh, text_color: Some(p.text), ..Default::default() }
 }
 
 /// One choice in a dropdown.
@@ -329,14 +328,14 @@ pub fn window_button(close: bool) -> impl Fn(&Theme, button::Status) -> button::
     }
 }
 
-/// A preset card in Settings; the chosen one gets an accent outline.
+/// A preset card in Settings; the chosen one sits on a raised plate.
 pub fn preset_card(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     let p = p();
     move |_, status| {
         button::Style {
-            background: Some(Background::Color(if hot(status) && !selected { p.raised } else { Color::TRANSPARENT })),
+            background: Some(Background::Color(if selected { mix(p.raised, p.text, 0.07) } else if hot(status) { p.raised } else { Color::TRANSPARENT })),
             text_color: p.text,
-            border: Border { color: if selected { p.accent } else { alpha(p.faint, 0.0) }, width: 2.0, radius: 12.0.into() },
+            border: border::rounded(12),
             ..Default::default()
         }
     }
@@ -386,8 +385,8 @@ pub fn input(_: &Theme, status: text_input::Status) -> text_input::Style {
     let p = p();
     let focused = matches!(status, text_input::Status::Focused { .. });
     text_input::Style {
-        background: Background::Color(p.raised),
-        border: Border { color: if focused { p.accent } else { Color::TRANSPARENT }, width: 1.5, radius: 8.0.into() },
+        background: Background::Color(if focused { mix(p.raised, p.text, 0.06) } else { p.raised }),
+        border: border::rounded(8),
         icon: p.muted,
         placeholder: p.muted,
         value: p.text,
@@ -411,7 +410,7 @@ pub fn menu(_: &Theme) -> iced::overlay::menu::Style {
     let p = p();
     iced::overlay::menu::Style {
         background: Background::Color(p.surface),
-        border: Border { color: p.faint, width: 1.0, radius: 8.0.into() },
+        border: border::rounded(8),
         text_color: p.text,
         selected_text_color: on(p.accent),
         selected_background: Background::Color(p.accent),
