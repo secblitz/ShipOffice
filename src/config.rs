@@ -79,7 +79,11 @@ impl Default for Config {
 }
 
 impl Config {
+    /// `SHIPOFFICE_CONFIG` points somewhere else (handy for demos and tests).
     pub fn path() -> Option<PathBuf> {
+        if let Some(p) = std::env::var_os("SHIPOFFICE_CONFIG").filter(|p| !p.is_empty()) {
+            return Some(PathBuf::from(p));
+        }
         directories::ProjectDirs::from("dev", "shipoffice", "ShipOffice").map(|d| d.config_dir().join("config.toml"))
     }
 

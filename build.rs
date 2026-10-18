@@ -33,4 +33,16 @@ fn main() {
     }
     out.push_str("];\n");
     std::fs::write(Path::new(&std::env::var("OUT_DIR").unwrap()).join("assets.rs"), out).unwrap();
+
+    // the .exe gets the app icon on Windows
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        #[cfg(windows)]
+        {
+            let mut res = winresource::WindowsResource::new();
+            res.set_icon("assets/brand/shipoffice.ico");
+            res.set("ProductName", "ShipOffice");
+            res.set("FileDescription", "ShipOffice");
+            let _ = res.compile();
+        }
+    }
 }
