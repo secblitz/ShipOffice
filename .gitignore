@@ -1,0 +1,10 @@
+/target
+# generated sources for the sprite pipeline (about 120 MB of AI renders); see art/README.md
+/art/raw/
+# pipeline intermediates that neither the app nor the preview loads
+/assets/*_companion.png
+/assets/*_seg.png
+/assets/*_lab.png
+/assets/desk_ai.png
+__pycache__/
+.DS_Store
