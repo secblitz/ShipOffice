@@ -5,6 +5,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod gemini;
 pub mod opencode;
 
 use crate::model::{AgentRef, Event, SessionKey};
@@ -49,6 +50,7 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
         Box::new(codex::Codex::default()),
         Box::new(opencode::OpenCode::opencode()),
         Box::new(opencode::OpenCode::kilo()),
+        Box::new(gemini::GeminiCli::default()),
     ]
 }
 
