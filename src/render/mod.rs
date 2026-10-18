@@ -1,0 +1,192 @@
+//! Drawing the office: a CPU-painted static layer (floor and walls), then every sprite in one
+//! instanced GPU pass that also does the outfit recolour, then a canvas overlay for text.
+
+pub mod assets;
+pub mod gpu;
+pub mod paint;
+pub mod scene;
+
+use crate::office::gen::Layout;
+use crate::office::{iso, WH};
+use bytemuck::{Pod, Zeroable};
+use std::sync::Arc;
+
+/// One textured quad: the unit square mapped by an affine transform into world pixels.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct Instance {
+    /// x' = m[0]·u + m[2]·v + t[0], y' = m[1]·u + m[3]·v + t[1]
+    pub m: [f32; 4],
+    pub t: [f32; 2],
+    /// additive highlight (hover), 0 for none
+    pub glow: f32,
+    pub _pad: f32,
+    pub uv: [f32; 4],
+    /// multiplies the result; alpha fades the whole quad
+    pub tint: [u8; 4],
+    /// outfit colours: top, hair, pants, accent
+    pub cols: [[u8; 4]; 4],
+}
+
+impl Instance {
+    /// An axis-aligned quad; `flip` mirrors it horizontally around its centre.
+    pub fn rect(x: f32, y: f32, w: f32, h: f32, uv: [f32; 4], flip: bool) -> Self {
+        let (m, t) = if flip { ([-w, 0.0, 0.0, h], [x + w, y]) } else { ([w, 0.0, 0.0, h], [x, y]) };
+        Self { m, t, glow: 0.0, _pad: 0.0, uv, tint: [255; 4], cols: [[0; 4]; 4] }
+    }
+    pub fn affine(m: [f32; 4], t: [f32; 2], uv: [f32; 4]) -> Self {
+        Self { m, t, glow: 0.0, _pad: 0.0, uv, tint: [255; 4], cols: [[0; 4]; 4] }
+    }
+    pub fn tint(mut self, rgba: [u8; 4]) -> Self {
+        self.tint = rgba;
+        self
+    }
+    pub fn alpha(mut self, a: f32) -> Self {
+        self.tint[3] = (self.tint[3] as f32 * a.clamp(0.0, 1.0)).round() as u8;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Fx {
+    White,
+    Shadow,
+    Ring,
+    Dot,
+    Glass,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TexKey {
+    /// a character animation sheet, by its meta.json key
+    Sheet(String),
+    /// a plain atlas file (props, cafe set, the empty desk)
+    Atlas(&'static str),
+    Fx(Fx),
+    /// a texture the app paints itself (the static layer, the whiteboard), uploaded when `version` changes
+    Layer(u64),
+}
+
+/// A CPU-painted texture with a version so the GPU side knows when to re-upload it.
+#[derive(Debug, Clone)]
+pub struct Layer {
+    pub id: u64,
+    pub version: u64,
+    pub image: Arc<image::RgbaImage>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DrawList {
+    pub items: Vec<(TexKey, Instance)>,
+    pub layers: Vec<Layer>,
+    /// clear colour behind the office, linear-free sRGB bytes
+    pub background: [u8; 3],
+}
+
+/// What the office looks at and how close. Port of the prototype's `cam`.
+#[derive(Debug, Clone, Copy)]
+pub struct Camera {
+    pub z: f32,
+    pub cx: f32,
+    pub cy: f32,
+    pub fit: f32,
+    pub home: (f32, f32),
+    pub bounds: Bounds,
+    /// stage size in logical px
+    pub w: f32,
+    pub h: f32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Bounds {
+    pub min_x: f32,
+    pub max_x: f32,
+    pub min_y: f32,
+    pub max_y: f32,
+}
+
+impl Bounds {
+    pub fn of(o: &Layout) -> Self {
+        let (w, h) = (o.w as f32, o.h as f32);
+        Self { min_x: iso(0.0, h).0 - 10.0, max_x: iso(w, 0.0).0 + 10.0, min_y: iso(0.0, 0.0).1 - WH - 40.0, max_y: iso(w, h).1 + 24.0 }
+    }
+    pub fn width(&self) -> f32 {
+        self.max_x - self.min_x
+    }
+    pub fn height(&self) -> f32 {
+        self.max_y - self.min_y
+    }
+}
+
+pub const MAX_ZOOM: f32 = 2.8;
+
+impl Camera {
+    pub fn new() -> Self {
+        Self { z: 1.0, cx: 0.0, cy: 0.0, fit: 1.0, home: (0.0, 0.0), bounds: Bounds::default(), w: 1.0, h: 1.0 }
+    }
+
+    /// Fits the office into the stage, leaving room for the HUD bars. `fresh` recentres.
+    pub fn layout(&mut self, b: Bounds, w: f32, h: f32, pad_top: f32, pad_bot: f32, fresh: bool) {
+        self.w = w.max(1.0);
+        self.h = h.max(1.0);
+        self.bounds = b;
+        self.fit = (self.w / b.width()).min((self.h - pad_top - pad_bot).max(80.0) / b.height());
+        self.home = ((b.min_x + b.max_x) / 2.0, (b.min_y + b.max_y) / 2.0 - (pad_top - pad_bot) / 2.0 / self.fit);
+        if fresh {
+            self.z = 1.0;
+            (self.cx, self.cy) = self.home;
+        }
+        self.clamp();
+    }
+
+    pub fn scale(&self) -> f32 {
+        self.fit * self.z
+    }
+
+    /// The office never slides off screen: at 1x it sits at home, zoomed in it pans to its edges.
+    pub fn clamp(&mut self) {
+        let s = self.scale();
+        let (hx, hy) = (self.w / 2.0 / s, self.h / 2.0 / s);
+        let b = self.bounds;
+        let c = |v: f32, lo: f32, hi: f32, half: f32, home: f32| if hi - lo <= 2.0 * half { home } else { v.clamp(lo + half, hi - half) };
+        self.cx = c(self.cx, b.min_x, b.max_x, hx, self.home.0);
+        self.cy = c(self.cy, b.min_y, b.max_y, hy, self.home.1);
+    }
+
+    pub fn origin(&self) -> (f32, f32) {
+        let s = self.scale();
+        (self.w / 2.0 - self.cx * s, self.h / 2.0 - self.cy * s)
+    }
+
+    pub fn to_world(&self, sx: f32, sy: f32) -> (f32, f32) {
+        let (ox, oy) = self.origin();
+        ((sx - ox) / self.scale(), (sy - oy) / self.scale())
+    }
+
+    pub fn to_screen(&self, wx: f32, wy: f32) -> (f32, f32) {
+        let (ox, oy) = self.origin();
+        (wx * self.scale() + ox, wy * self.scale() + oy)
+    }
+
+    pub fn zoom_at(&mut self, sx: f32, sy: f32, factor: f32) {
+        let (wx, wy) = self.to_world(sx, sy);
+        self.z = (self.z * factor).clamp(1.0, MAX_ZOOM);
+        let s = self.scale();
+        self.cx = wx - (sx - self.w / 2.0) / s;
+        self.cy = wy - (sy - self.h / 2.0) / s;
+        self.clamp();
+    }
+
+    pub fn pan(&mut self, dx: f32, dy: f32) {
+        let s = self.scale();
+        self.cx -= dx / s;
+        self.cy -= dy / s;
+        self.clamp();
+    }
+}
+
+impl Default for Camera {
+    fn default() -> Self {
+        Self::new()
+    }
+}

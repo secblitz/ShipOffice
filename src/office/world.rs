@@ -217,6 +217,22 @@ pub struct Shared {
     chat_t: f32,
 }
 
+impl Shared {
+    pub fn seat(&self, r: SeatRef) -> &super::gen::Seat {
+        match r {
+            SeatRef::Desk(i) => &self.layout.desks[i],
+            SeatRef::Lounge(i) => &self.layout.lounge.seats[i],
+        }
+    }
+}
+
+impl Avatar {
+    /// The colour that marks this agent in the HUD: their shirt.
+    pub fn color(&self) -> [u8; 3] {
+        self.palette.cols[1].unwrap_or([200, 200, 200])
+    }
+}
+
 pub struct World {
     pub avatars: Vec<Avatar>,
     pub s: Shared,
@@ -255,6 +271,11 @@ impl World {
             chat_t: 2.0,
         };
         Self { avatars: Vec::new(), s, project: project.to_owned(), next_id: 1 }
+    }
+
+    /// Someone is at the coffee machine right now (the machine steams).
+    pub fn brewing(&self) -> bool {
+        self.avatars.iter().any(|a| a.q.front().is_some_and(|s| matches!(s, Step::Act { tag: Tag::Bar, started: true, .. })))
     }
 
     pub fn avatar(&self, id: u32) -> Option<&Avatar> {

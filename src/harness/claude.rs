@@ -278,12 +278,24 @@ impl SourceReader for Reader {
                     .map(str::to_owned)
                     .unwrap_or_else(|| "Subagent".into());
                 let kind = m.and_then(|m| m.get("agentType").and_then(Value::as_str)).map(str::to_owned);
-                out.push(self.ev(SystemTime::now(), EventKind::SubagentStart { agent_id: id.clone(), description, kind }));
+                // the start is when the helper's first line was written, not when we found it
+                let at = lines[0].get("timestamp").map_or_else(SystemTime::now, ts);
+                out.push(self.ev(at, EventKind::SubagentStart { agent_id: id.clone(), description, kind }));
             }
         }
+        let first_read = !self.started;
         for v in &lines {
             self.line(v, &mut out);
             self.started = true;
+        }
+        // a helper whose transcript went quiet long ago finished before we started watching,
+        // even if the lead's completion notice is outside the part of its log we read
+        if first_read && self.started {
+            if let (AgentRef::Sub(id), Some(m)) = (&self.agent, self.tail.modified()) {
+                if SystemTime::now().duration_since(m).unwrap_or_default() > std::time::Duration::from_secs(600) {
+                    out.push(self.ev(m, EventKind::SubagentEnd { agent_id: id.clone() }));
+                }
+            }
         }
         if matches!(self.agent, AgentRef::Lead) {
             self.live_status(&mut out);

@@ -77,6 +77,11 @@ const CHUNK: usize = 1024 * 1024;
 const PER_POLL: u64 = 96 * 1024 * 1024;
 
 impl JsonlTail {
+    /// When the file last changed.
+    pub fn modified(&self) -> Option<SystemTime> {
+        modified(&self.path)
+    }
+
     pub fn new(path: PathBuf) -> Self {
         let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let (offset, skipping) = if len > BACKLOG { (len - BACKLOG, true) } else { (0, false) };

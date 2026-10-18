@@ -11,6 +11,8 @@ build = "build.rs"
 iced = { version = "0.14", features = ["canvas", "image", "tokio", "advanced"] }
 image = { version = "0.25", default-features = false, features = ["png", "webp"] }
 tiny-skia = "0.11"
+fontdue = "0.9"
+bytemuck = { version = "1", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
