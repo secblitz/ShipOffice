@@ -19,20 +19,25 @@ const SCAN_LIMIT: i64 = 100;
 const BACKLOG_ROWS: i64 = 200;
 const POLL_LIMIT: i64 = 300;
 
+/// (session, parent, updated) rows from one scan of a database.
+type Scan = Vec<(String, Option<String>, SystemTime)>;
+/// (database, project folder)
+type Project = (PathBuf, PathBuf);
+
 #[derive(Default)]
 pub struct Crush {
     dbs: DbCache,
     /// projects.json path -> the file and the (database, project folder) pairs it lists
-    indexes: Mutex<HashMap<PathBuf, (JsonFile, Vec<(PathBuf, PathBuf)>)>>,
+    indexes: Mutex<HashMap<PathBuf, (JsonFile, Vec<Project>)>>,
     /// database -> project folder, for the readers
     projects: Mutex<HashMap<PathBuf, PathBuf>>,
-    /// db path -> (data_version at the last scan, (session, parent, updated) it found)
-    scans: Mutex<HashMap<PathBuf, (i64, Vec<(String, Option<String>, SystemTime)>)>>,
+    /// db path -> (data_version at the last scan, what it found)
+    scans: Mutex<HashMap<PathBuf, (i64, Scan)>>,
 }
 
 impl Crush {
     /// Databases under a root: the projects a `projects.json` lists, or a project / `.crush` folder given directly.
-    fn dbs_in(&self, root: &Path) -> Vec<(PathBuf, PathBuf)> {
+    fn dbs_in(&self, root: &Path) -> Vec<Project> {
         let index = root.join("projects.json");
         if index.is_file() {
             let mut idx = self.indexes.lock().unwrap();

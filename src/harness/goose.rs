@@ -16,11 +16,14 @@ const SCAN_LIMIT: i64 = 100;
 const BACKLOG_ROWS: i64 = 200;
 const POLL_LIMIT: i64 = 300;
 
+/// (session, parent, updated) rows from one scan of a database.
+type Scan = Vec<(String, Option<String>, SystemTime)>;
+
 #[derive(Default)]
 pub struct Goose {
     dbs: DbCache,
-    /// db path -> (data_version at the last scan, (session, parent, updated) it found)
-    scans: Mutex<HashMap<PathBuf, (i64, Vec<(String, Option<String>, SystemTime)>)>>,
+    /// db path -> (data_version at the last scan, what it found)
+    scans: Mutex<HashMap<PathBuf, (i64, Scan)>>,
 }
 
 impl Adapter for Goose {

@@ -51,7 +51,10 @@ impl Adapter for Cursor {
                         for s in subs.flatten() {
                             let sp = s.path();
                             let Some(child) = sp.file_stem().and_then(|s| s.to_str()).map(str::to_owned) else { continue };
-                            if let Some(m) = Some(&sp).filter(|p| p.extension().is_some_and(|x| x == "jsonl")).and_then(|p| modified(p)).filter(|m| *m >= since) {
+                            if sp.extension().is_none_or(|x| x != "jsonl") {
+                                continue;
+                            }
+                            if let Some(m) = modified(&sp).filter(|m| *m >= since) {
                                 out.push(spec(&id, AgentRef::Sub(child), sp, m));
                             }
                         }

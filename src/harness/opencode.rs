@@ -22,6 +22,9 @@ const BACKLOG_ROWS: i64 = 200;
 /// Rows one poll reads.
 const POLL_LIMIT: i64 = 300;
 
+/// (session, parent, time_updated) rows from one scan of a database.
+type Scan = Vec<(String, Option<String>, i64)>;
+
 pub struct OpenCode {
     id: &'static str,
     name: &'static str,
@@ -29,8 +32,8 @@ pub struct OpenCode {
     stem: &'static str,
     env_db: &'static str,
     dbs: DbCache,
-    /// db path -> (data_version at the last scan, (session, parent, time_updated) it found)
-    scans: Mutex<HashMap<PathBuf, (i64, Vec<(String, Option<String>, i64)>)>>,
+    /// db path -> (data_version at the last scan, what it found)
+    scans: Mutex<HashMap<PathBuf, (i64, Scan)>>,
     /// session -> its root session, so a subagent lands in the office of the session that spawned it
     roots: Mutex<HashMap<String, String>>,
 }
@@ -139,7 +142,7 @@ impl Adapter for OpenCode {
                         let got = db.with(|c| {
                             let mut st = c.prepare(&sql)?;
                             let it = st.query_map(params![since_ms, SCAN_LIMIT], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
-                            it.collect::<rusqlite::Result<Vec<(String, Option<String>, i64)>>>()
+                            it.collect::<rusqlite::Result<Scan>>()
                         });
                         rows.extend(got.unwrap_or_default());
                     }
