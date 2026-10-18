@@ -16,9 +16,9 @@
   <img src="https://img.shields.io/badge/Linux%20·%20Windows%20·%20macOS-native-6b7280" alt="Native on Linux, Windows and macOS">
 </p>
 
-<!-- DEMO -->
 <p align="center">
-  <img src="docs/screenshot-night.jpg" alt="An office high above the city at night, the floors below it lit" width="100%">
+  <a href="docs/demo.mp4"><img src="docs/demo.webp" alt="ShipOffice demo: a crew at work high above the city, subagents walking in, the camera turning down to the streets, the inspector, themes and new offices" width="100%"></a>
+  <br><sub><a href="docs/demo.mp4">Watch the full video (1080p, 60 fps)</a></sub>
 </p>
 
 ---
