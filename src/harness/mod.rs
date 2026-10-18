@@ -8,6 +8,7 @@ pub mod cline;
 pub mod codex;
 pub mod copilot;
 pub mod gemini;
+pub mod goose;
 pub mod opencode;
 pub mod qwen;
 
@@ -58,6 +59,7 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
         Box::new(copilot::CopilotCli),
         Box::new(cline::Cline::cline()),
         Box::new(cline::Cline::roo()),
+        Box::new(goose::Goose::default()),
     ]
 }
 
