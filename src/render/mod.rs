@@ -4,6 +4,7 @@
 pub mod assets;
 pub mod gpu;
 pub mod paint;
+pub mod city;
 pub mod scene;
 pub mod view;
 
@@ -54,6 +55,10 @@ pub enum Fx {
     Ring,
     Dot,
     Glass,
+    /// transparent at the top, opaque at the bottom: haze bands and fades
+    Ramp,
+    /// a gull, wings up or down
+    Bird(bool),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

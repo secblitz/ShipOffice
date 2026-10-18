@@ -39,11 +39,25 @@ pub struct Appearance {
     pub colors: BTreeMap<String, String>,
     /// Use one office style for every project instead of a procedural one (theme name).
     pub office_style: Option<String>,
+    /// What surrounds the office.
+    pub backdrop: Backdrop,
+}
+
+/// The office as a floor of a city tower, or on its own.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Backdrop {
+    /// the city, by day on light themes and by night on dark ones
+    #[default]
+    City,
+    Day,
+    Night,
+    None,
 }
 
 impl Default for Appearance {
     fn default() -> Self {
-        Self { theme: "graphite".into(), colors: BTreeMap::new(), office_style: None }
+        Self { theme: "graphite".into(), colors: BTreeMap::new(), office_style: None, backdrop: Backdrop::City }
     }
 }
 

@@ -107,6 +107,7 @@ pub enum Setting {
     ResetColors,
     OfficeStyle(Option<String>),
     SnapView(bool),
+    Backdrop(crate::config::Backdrop),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -296,7 +297,7 @@ impl App {
                     Some(("page", "look")) => app.page = Page::Look,
                     Some(("page", "sources")) => app.page = Page::Sources,
                     Some(("page", "office")) => app.page = Page::Office,
-                    Some(("menu", m)) => app.menu = ["theme", "office", "harness", "minutes", "tabs", "fps"].into_iter().find(|k| *k == m),
+                    Some(("menu", m)) => app.menu = ["theme", "office", "backdrop", "harness", "minutes", "tabs", "fps"].into_iter().find(|k| *k == m),
                     _ => {}
                 }
             }
@@ -830,6 +831,15 @@ impl App {
 
     fn build_scene(&mut self) {
         let cfg_fps = self.config().anim_fps.clamp(4, 30) as f32;
+        use crate::config::Backdrop;
+        let night = match self.config().appearance.backdrop {
+            Backdrop::None => None,
+            Backdrop::Day => Some(false),
+            Backdrop::Night => Some(true),
+            Backdrop::City => Some(!style::p().light),
+        };
+        let screen = crate::render::city::Screen { scale: self.cam.scale(), origin: self.cam.origin(), w: self.stage.width, h: self.stage.height };
+        let city = night.map(|night| (crate::render::city::City { night }, screen));
         let Some(t) = self.tabs.get(self.active) else {
             self.scene = Scene::default();
             return;
@@ -843,6 +853,7 @@ impl App {
             selected: self.selected,
             anim_fps: cfg_fps,
             now: self.started.elapsed().as_secs_f32(),
+            city,
         });
         // a new office fades in
         let fade = style::entrance(self.tab_since, 0.35);
@@ -864,6 +875,7 @@ impl App {
                 Setting::Demo(v) => c.demo_when_empty = v,
                 Setting::ShowFps(v) => c.show_fps = v,
                 Setting::SnapView(v) => c.snap_view = v,
+                Setting::Backdrop(b) => c.appearance.backdrop = b,
                 Setting::AnimFps(v) => c.anim_fps = v,
                 Setting::ActiveMinutes(v) => c.active_minutes = v,
                 Setting::MaxTabs(v) => c.max_tabs = v,

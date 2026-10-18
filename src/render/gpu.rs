@@ -164,6 +164,8 @@ fn fx_image(fx: Fx) -> RgbaImage {
         Fx::Shadow | Fx::Ring => (128, 56),
         Fx::Dot => (32, 32),
         Fx::Glass => (16, 64),
+        Fx::Ramp => (4, 64),
+        Fx::Bird(_) => (32, 20),
     };
     RgbaImage::from_fn(w, h, |x, y| {
         let (u, v) = ((x as f32 + 0.5) / w as f32 * 2.0 - 1.0, (y as f32 + 0.5) / h as f32 * 2.0 - 1.0);
@@ -177,6 +179,25 @@ fn fx_image(fx: Fx) -> RgbaImage {
                 (1.0 - d / 0.07).clamp(0.0, 1.0)
             }
             Fx::Dot => ((1.0 - r) * 8.0).clamp(0.0, 1.0),
+            Fx::Ramp => {
+                let t = (y as f32 + 0.5) / h as f32;
+                t * t * (3.0 - 2.0 * t)
+            }
+            Fx::Bird(up) => {
+                // an M (wings up) or a flattened W (wings down), 2 px wide with a soft edge
+                let pts: [(f32, f32); 5] = if up { [(1.0, 9.0), (8.0, 3.0), (16.0, 11.0), (24.0, 3.0), (31.0, 9.0)] } else { [(1.0, 12.0), (8.0, 16.0), (16.0, 11.0), (24.0, 16.0), (31.0, 12.0)] };
+                let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                let d = pts
+                    .windows(2)
+                    .map(|s| {
+                        let ((ax, ay), (bx, by)) = (s[0], s[1]);
+                        let (dx, dy) = (bx - ax, by - ay);
+                        let t = (((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+                        ((px - ax - t * dx).powi(2) + (py - ay - t * dy).powi(2)).sqrt()
+                    })
+                    .fold(f32::MAX, f32::min);
+                (1.0 - (d - 1.0) / 1.2).clamp(0.0, 1.0)
+            }
             Fx::Glass => {
                 let edge = x == 0 || x == w - 1 || y == 0 || y == h - 1;
                 if edge {

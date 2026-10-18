@@ -22,6 +22,12 @@ fn main() {
             files.push(f.to_owned());
         }
     }
+    // the city backdrop: skyline and street, by day and by night
+    for layer in ["far", "near"] {
+        for time in ["day", "night"] {
+            files.push(format!("city/{layer}-{time}.webp"));
+        }
+    }
     files.sort();
     files.dedup();
     let mut out = String::from("pub static FILES: &[(&str, &[u8])] = &[\n");

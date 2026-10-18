@@ -543,7 +543,19 @@ impl App {
             None => t("Procedural", 12.5, pal.text).font(UI_MEDIUM).into(),
         };
         let office = self.dropdown("office", current, office_opts, 180.0);
-        let mut c = column![group("Theme", vec![item("Theme", None, theme), item("Accent", None, accents.into()), item("Office style", None, office)])].spacing(18);
+        use crate::config::Backdrop;
+        let names = [(Backdrop::City, "City", "Day or night with the theme"), (Backdrop::Day, "City by day", ""), (Backdrop::Night, "City by night", ""), (Backdrop::None, "None", "The office on its own")];
+        let cur_b = cfg.appearance.backdrop;
+        let backdrop_opts = names
+            .iter()
+            .map(|&(b, name, hint)| -> (El, Message, bool) {
+                let label: El = if hint.is_empty() { t(name, 12.5, pal.text).into() } else { column![t(name, 12.5, pal.text), t(hint, 11.0, pal.muted)].spacing(1).into() };
+                (label, Message::Setting(Setting::Backdrop(b)), b == cur_b)
+            })
+            .collect();
+        let cur_name = names.iter().find(|n| n.0 == cur_b).map_or("City", |n| n.1);
+        let backdrop = self.dropdown("backdrop", t(cur_name, 12.5, pal.text).font(UI_MEDIUM).into(), backdrop_opts, 180.0);
+        let mut c = column![group("Theme", vec![item("Theme", None, theme), item("Accent", None, accents.into()), item("Office style", None, office), item("Backdrop", None, backdrop)])].spacing(18);
 
         // hand-picked colours stay folded away until asked for
         let n = cfg.appearance.colors.len();

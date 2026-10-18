@@ -3,6 +3,7 @@
 
 use super::assets::{meta, sheet_key};
 use super::paint::CUTAWAY;
+use super::city::{self, City, Screen};
 use super::view::{wall_height, View, Wall};
 use super::{DrawList, Fx, Instance, Layer, TexKey};
 use crate::office::gen::{Atlas, Prop, SeatKind};
@@ -112,6 +113,8 @@ pub struct Inputs<'a> {
     pub anim_fps: f32,
     /// wall-clock seconds, for ambient motion
     pub now: f32,
+    /// the city around the tower, and where the screen is (it is laid out in screen space)
+    pub city: Option<(City, Screen)>,
 }
 
 fn uv_rect(x: u32, y: u32, w: u32, h: u32, size: (u32, u32)) -> [f32; 4] {
@@ -166,6 +169,11 @@ pub fn build(inp: &Inputs) -> Scene {
     let o = &w.s.layout;
     let m = meta();
     let mut sc = Scene::default();
+    if let Some((c, s)) = &inp.city {
+        city::backdrop(&mut sc.list.items, *c, s, v, inp.now);
+    }
+    // our floor starts here; the floors below are copied from it
+    let office_start = sc.list.items.len();
     let (ww, hh, zt) = (o.w as f32, o.h as f32, wall_height());
     let walls = [
         (Wall::Back, [0.0, 0.0, zt], [ww, 0.0, 0.0]),
@@ -207,24 +215,6 @@ pub fn build(inp: &Inputs) -> Scene {
         let (y0, y1) = (ys.iter().copied().fold(f32::MAX, f32::min), ys.iter().copied().fold(f32::MIN, f32::max));
         sc.hits.push((Hit::Board, [x0, y0, x1 - x0, y1 - y0]));
     }
-    // the projector over the lounge lights up when someone is on the couch
-    if back {
-        let lit = w.avatars.iter().any(|a| matches!(a.seated, Some(r) if w.s.seat(r).kind == SeatKind::Couch));
-        let pspan = (o.w - o.l0) as f32 * TW / 2.0;
-        let (mm, t) = v.wall_rect(true, o.l0 as f32, -2.0, -112.0, pspan + 4.0, 50.0);
-        sc.list.items.push((TexKey::Fx(Fx::White), Instance::affine(mm, t, FULL).tint([0x20, 0x23, 0x2b, 255])));
-        let screen = if lit { hsl((inp.now * 8.0) % 360.0, 0.5, 0.45) } else { [0x2b, 0x2f, 0x3a] };
-        let (mm, t) = v.wall_rect(true, o.l0 as f32, 1.0, -109.0, pspan - 2.0, 44.0);
-        sc.list.items.push((TexKey::Fx(Fx::White), Instance::affine(mm, t, FULL).tint([screen[0], screen[1], screen[2], 255])));
-        if lit {
-            let x = (inp.now * 14.0) % (pspan + 30.0) - 15.0;
-            let (mm, t) = v.wall_rect(true, o.l0 as f32, x, -76.0, 9.0, 12.0);
-            sc.list.items.push((TexKey::Fx(Fx::White), Instance::affine(mm, t, FULL).tint([20, 24, 34, 216])));
-            let (mm, t) = v.wall_rect(true, o.l0 as f32, pspan * 0.72, -103.0 + (inp.now * 0.6).sin() * 3.0, 10.0, 10.0);
-            sc.list.items.push((TexKey::Fx(Fx::Dot), Instance::affine(mm, t, FULL).tint([255, 240, 200, 230])));
-        }
-    }
-
     // everything that stands on the floor, sorted back to front
     let mut items: Vec<(f32, TexKey, Instance)> = Vec::new();
     let mut hits: Vec<(f32, Hit, [f32; 4])> = Vec::new();
@@ -330,6 +320,18 @@ pub fn build(inp: &Inputs) -> Scene {
     }
     items.sort_by(|p, q| p.0.total_cmp(&q.0));
     sc.list.items.extend(items.into_iter().map(|(_, k, i)| (k, i)));
+    // the tower goes on below: two dimmer floors with our layout, no people, no board
+    if let Some((c, s)) = &inp.city {
+        let board = inp.board.map(|l| l.id);
+        let before = sc.list.items.len();
+        city::floors_below(&mut sc.list.items, office_start, *c, v, |k| match k {
+            TexKey::Sheet(_) | TexKey::Fx(Fx::Shadow | Fx::Ring | Fx::Dot) => false,
+            TexKey::Layer(id) => Some(*id) != board,
+            _ => true,
+        });
+        let copied = sc.list.items.len() - before;
+        city::ground_fade(&mut sc.list.items, office_start + copied, *c, s);
+    }
     // walls between you and the room are cut down to a skirting, drawn over everything
     if let Some(st) = inp.statics {
         for (i, (wall, o3, u)) in walls.iter().enumerate() {
