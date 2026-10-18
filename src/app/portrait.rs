@@ -46,22 +46,29 @@ fn face(char_id: u8, cols: &[[u8; 3]; 4]) -> Option<RgbaImage> {
         }
         None => frame,
     };
-    // the head is the top of the figure: a square as wide as the figure, from its top edge
-    let (mut x0, mut x1, mut y0) = (u32::MAX, 0, u32::MAX);
-    for (x, y, p) in img.enumerate_pixels() {
+    // chibi heads are about half the figure: a square of that size from the top, centred on the head
+    let (mut y0, mut y1) = (u32::MAX, 0);
+    for (_, y, p) in img.enumerate_pixels() {
         if p[3] > 40 {
-            x0 = x0.min(x);
-            x1 = x1.max(x);
             y0 = y0.min(y);
+            y1 = y1.max(y);
         }
     }
-    if x0 > x1 {
+    if y0 > y1 {
         return None;
     }
-    let side = ((x1 - x0) as f32 * 0.92) as u32;
+    let h = (y1 - y0) as f32;
+    let (mut x0, mut x1) = (u32::MAX, 0);
+    for (x, y, p) in img.enumerate_pixels() {
+        if p[3] > 40 && (y as f32) < y0 as f32 + h * 0.4 {
+            x0 = x0.min(x);
+            x1 = x1.max(x);
+        }
+    }
+    let side = (h * 0.54) as u32;
     let cx = (x0 + x1) / 2;
     let left = cx.saturating_sub(side / 2);
-    let top = y0.saturating_sub(side / 14);
+    let top = y0.saturating_sub((h * 0.03) as u32);
     let side = side.min(img.width() - left).min(img.height() - top);
     let head = image::imageops::crop_imm(&img, left, top, side, side).to_image();
     Some(image::imageops::resize(&head, SIZE, SIZE, image::imageops::FilterType::Lanczos3))

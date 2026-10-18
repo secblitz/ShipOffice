@@ -6,6 +6,7 @@ pub mod hud;
 pub mod icon;
 pub mod overlay;
 pub mod popover;
+pub mod portrait;
 pub mod style;
 
 use crate::config::Config;

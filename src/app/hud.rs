@@ -42,6 +42,19 @@ fn tool<'a>(i: Icon, tip: &'a str, msg: Message, on_: bool) -> El<'a> {
     tooltip(b, container(t(tip, 11.5, pal.text)).padding([4, 8]).style(style::surface(7.0)), tooltip::Position::Top).gap(6).into()
 }
 
+/// An agent's face from their own sprite, ringed in their shirt colour; their initial if the
+/// sprite has none.
+fn face<'a>(a: &crate::office::world::Avatar, d: f32) -> El<'a> {
+    let c = rgb8(a.color());
+    let ring = 2.0;
+    let inner: El = match super::portrait::portrait(a.char_id, &a.palette) {
+        Some(h) => iced::widget::image(h).width(d - 2.0 * ring).height(d - 2.0 * ring).border_radius((d - 2.0 * ring) / 2.0).into(),
+        None => container(t(a.name.chars().next().unwrap_or('?').to_uppercase().to_string(), d * 0.4, on(c)).font(UI_BOLD)).center(d - 2.0 * ring).into(),
+    };
+    let pal = p();
+    container(container(inner).center(d - 2.0 * ring).style(style::fill(pal.raised, 999.0))).padding(ring).style(style::fill(c, 999.0)).into()
+}
+
 fn small_x<'a>(msg: Message) -> El<'a> {
     button(container(icon(Icon::Close, 13.0, p().muted)).center(Fill)).width(26).height(26).padding(0).style(style::flat(false)).on_press(msg).into()
 }
@@ -284,7 +297,7 @@ impl App {
         let Some(tab) = self.tab() else { return Space::new().into() };
         let rows = column(tab.world.avatars.iter().map(|a| -> El {
             let sel = self.selected == Some(a.id);
-            let body = row![dot(rgb8(a.color()), 9.0), t(clip(&a.name, 30), 12.5, pal.text).font(UI_MEDIUM).width(Fill), t(clip(&a.label, 30), 11.5, badge_color(&a.label))].spacing(10).align_y(Alignment::Center);
+            let body = row![face(a, 24.0), t(clip(&a.name, 30), 12.5, pal.text).font(UI_MEDIUM).width(Fill), t(clip(&a.label, 30), 11.5, badge_color(&a.label))].spacing(10).align_y(Alignment::Center);
             button(body).padding([7, 10]).width(Fill).style(style::flat(sel)).on_press(Message::Select(if sel { None } else { Some(a.id) })).into()
         }))
         .spacing(1);
@@ -353,9 +366,8 @@ impl App {
         let (sx, sy) = self.cam.to_screen(h.x, (h.top + h.bottom) / 2.0);
         let role = if a.lead { format!("Lead · {}", s.model.clone().unwrap_or_else(|| s.harness_name.clone())) } else { st.and_then(|st| st.kind.clone()).unwrap_or_else(|| "Helper".into()) };
         let c = rgb8(a.color());
-        let initial = a.name.chars().next().unwrap_or('?').to_uppercase().to_string();
         let head = row![
-            container(t(initial, 14.0, on(c)).font(UI_BOLD)).center(34).style(style::dot(c)),
+            face(a, 38.0),
             column![t(clip(&a.name, 30), 14.0, pal.text).font(UI_BOLD), t(clip(&role, 38), 11.5, pal.muted)].spacing(1).width(Fill),
             small_x(Message::CloseCards)
         ]
