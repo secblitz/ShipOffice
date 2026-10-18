@@ -606,10 +606,11 @@ impl App {
         };
         let stats = share::Stats::gather(self.tabs.iter().filter_map(|t| self.sessions.get(&t.key)));
         let crew: Vec<share::Member> = self.tabs.iter().flat_map(|t| &t.world.avatars).map(|a| share::Member { face: portrait::face_image(a.char_id, &a.palette), ring: a.color() }).collect();
-        let a = style::p().accent;
-        let accent = [a.r, a.g, a.b].map(|c| (c * 255.0).round() as u8);
+        let pal = style::p();
+        let rgb = |c: iced::Color| [c.r, c.g, c.b].map(|v| (v * 255.0).round() as u8);
+        let look = share::Look { bg: rgb(pal.bg), bg2: rgb(pal.bg2), surface: rgb(pal.surface), raised: rgb(pal.raised), text: rgb(pal.text), muted: rgb(pal.muted), faint: rgb(pal.faint), accent: rgb(pal.accent), light: pal.light };
         let date = local_now().format(time::macros::format_description!("[weekday repr:short] [day padding:none] [month repr:short] [year]")).unwrap_or_default();
-        let image = share::card(&office, &stats, &crew, accent, &date);
+        let image = share::card(&office, &stats, &crew, &look, &date);
         let handle = iced::widget::image::Handle::from_rgba(image.width(), image.height(), image.as_raw().clone());
         Some(Card { image, handle, caption: share::caption(&stats), saved: None, copied: false })
     }

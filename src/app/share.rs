@@ -86,10 +86,19 @@ pub struct Member {
     pub ring: [u8; 3],
 }
 
-const BG_TOP: u32 = 0x0b1020;
-const BG_BOTTOM: u32 = 0x05070d;
-const TEXT: u32 = 0xf5f7fb;
-const MUTED: u32 = 0x8b93a7;
+/// The theme in use, so the card looks like the app: the stage's gradient, its panels and text.
+#[derive(Debug, Clone, Copy)]
+pub struct Look {
+    pub bg: [u8; 3],
+    pub bg2: [u8; 3],
+    pub surface: [u8; 3],
+    pub raised: [u8; 3],
+    pub text: [u8; 3],
+    pub muted: [u8; 3],
+    pub faint: [u8; 3],
+    pub accent: [u8; 3],
+    pub light: bool,
+}
 const M: f32 = 56.0;
 /// where the picture of the office goes: x, y, w, h
 const OFFICE: (f32, f32, f32, f32) = (M, 462.0, W as f32 - 2.0 * M, 600.0);
@@ -118,38 +127,40 @@ pub fn around(img: &RgbaImage, room: [f32; 4]) -> RgbaImage {
 }
 
 /// The card: score, the office, the crew and the numbers.
-pub fn card(office: &RgbaImage, s: &Stats, crew: &[Member], accent: [u8; 3], date: &str) -> RgbaImage {
+pub fn card(office: &RgbaImage, s: &Stats, crew: &[Member], look: &Look, date: &str) -> RgbaImage {
     let mut pm = Pixmap::new(W, H).unwrap();
-    let acc = Color::from_rgba8(accent[0], accent[1], accent[2], 255);
+    let (text_c, muted) = (c(look.text, 1.0), c(look.muted, 1.0));
+    let acc = c(look.accent, 1.0);
     let (w, h) = (W as f32, H as f32);
-    fill(&mut pm, &rrect(0.0, 0.0, w, h, 0.0), linear((0.0, 0.0), (0.0, h), &[(0.0, rgb(BG_TOP, 1.0)), (1.0, rgb(BG_BOTTOM, 1.0))]));
-    // the accent glows behind the score
-    if let Some(g) = RadialGradient::new(Point::from_xy(w * 0.82, 230.0), Point::from_xy(w * 0.82, 230.0), 620.0, vec![GradientStop::new(0.0, with_alpha(acc, 0.34)), GradientStop::new(1.0, with_alpha(acc, 0.0))], SpreadMode::Pad, Transform::identity()) {
+    fill(&mut pm, &rrect(0.0, 0.0, w, h, 0.0), linear((0.0, 0.0), (0.0, h), &[(0.0, c(look.bg, 1.0)), (1.0, c(look.bg2, 1.0))]));
+    // the accent glows behind the score, softer on a light theme
+    let glow = if look.light { 0.1 } else { 0.12 };
+    if let Some(g) = RadialGradient::new(Point::from_xy(w * 0.82, 230.0), Point::from_xy(w * 0.82, 230.0), 620.0, vec![GradientStop::new(0.0, with_alpha(acc, glow)), GradientStop::new(1.0, with_alpha(acc, 0.0))], SpreadMode::Pad, Transform::identity()) {
         fill(&mut pm, &rrect(0.0, 0.0, w, h, 0.0), g);
     }
 
     // header: the wordmark and the day
-    let x = text(&mut pm, Font::Semi, "Ship", M, 96.0, 34.0, rgb(TEXT, 1.0), 0.0);
+    let x = text(&mut pm, Font::Semi, "Ship", M, 96.0, 34.0, text_c, 0.0);
     text(&mut pm, Font::Semi, "Office", x, 96.0, 34.0, acc, 0.0);
     let dw = width(Font::Mono, date, 24.0, 0.0);
-    text(&mut pm, Font::Mono, date, w - M - dw, 94.0, 24.0, rgb(MUTED, 1.0), 0.0);
+    text(&mut pm, Font::Mono, date, w - M - dw, 94.0, 24.0, muted, 0.0);
 
     // the score
     let n = score(s);
     text(&mut pm, Font::Mono, "HOW LOCKED IN", M, 178.0, 24.0, acc, 4.0);
-    let x = text(&mut pm, Font::Semi, &n.to_string(), M - 7.0, 392.0, 260.0, rgb(TEXT, 1.0), -5.0);
-    text(&mut pm, Font::Medium, "/100", x + 12.0, 392.0, 54.0, rgb(MUTED, 1.0), 0.0);
+    let x = text(&mut pm, Font::Semi, &n.to_string(), M - 7.0, 392.0, 260.0, text_c, -5.0);
+    text(&mut pm, Font::Medium, "/100", x + 12.0, 392.0, 54.0, muted, 0.0);
     let t = tier(n);
     let tw = width(Font::Semi, t, 60.0, 0.0);
     text(&mut pm, Font::Semi, t, w - M - tw, 306.0, 60.0, acc, 0.0);
     let sub = format!("{} on {}", plural(s.agents, "agent"), plural(s.sessions, "session"));
     let sw = width(Font::Medium, &sub, 30.0, 0.0);
-    text(&mut pm, Font::Medium, &sub, w - M - sw, 358.0, 30.0, rgb(MUTED, 1.0), 0.0);
+    text(&mut pm, Font::Medium, &sub, w - M - sw, 358.0, 30.0, muted, 0.0);
     // a bar filled to the score
     let bar = w - 2.0 * M;
-    fill(&mut pm, &rrect(M, 420.0, bar, 12.0, 6.0), solid(rgb(TEXT, 0.08)));
+    fill(&mut pm, &rrect(M, 420.0, bar, 12.0, 6.0), solid(c(look.faint, 1.0)));
     if n > 0 {
-        let lit = Color::from_rgba8(accent[0].saturating_add(70), accent[1].saturating_add(70), accent[2].saturating_add(70), 255);
+        let lit = c(look.accent.map(|v| v.saturating_add(70)), 1.0);
         fill(&mut pm, &rrect(M, 420.0, (bar * n as f32 / 100.0).max(12.0), 12.0, 6.0), linear((M, 0.0), (M + bar, 0.0), &[(0.0, acc), (1.0, lit)]));
     }
 
@@ -158,16 +169,19 @@ pub fn card(office: &RgbaImage, s: &Stats, crew: &[Member], accent: [u8; 3], dat
     let pic = cover(office, ow as u32, oh as u32);
     let frame = rrect(ox, oy, ow, oh, 34.0);
     draw_image(&mut pm, &pic, ox, oy, &frame);
-    stroke(&mut pm, &frame, rgb(TEXT, 0.12), 2.0);
+    stroke(&mut pm, &frame, c(look.text, 0.12), 2.0);
 
     // the crew's faces sit on the picture's bottom edge
     let (d, gap) = (96.0, 18.0);
     let shown = crew.len().min(7);
+    // a gap the colour of the card around each face
+    let k = (OFFICE.1 + OFFICE.3) / h;
+    let gap_c = c([0, 1, 2].map(|i| (look.bg[i] as f32 + (look.bg2[i] as f32 - look.bg[i] as f32) * k).round() as u8), 1.0);
     for (i, m) in crew.iter().take(shown).enumerate() {
         let (cx, cy) = (ox + 34.0 + d / 2.0 + i as f32 * (d + gap), oy + oh);
-        fill(&mut pm, &circle(cx, cy, d / 2.0 + 7.0), solid(rgb(BG_TOP, 1.0)));
+        fill(&mut pm, &circle(cx, cy, d / 2.0 + 7.0), solid(gap_c));
         fill(&mut pm, &circle(cx, cy, d / 2.0), solid(Color::from_rgba8(m.ring[0], m.ring[1], m.ring[2], 255)));
-        fill(&mut pm, &circle(cx, cy, d / 2.0 - 5.0), solid(rgb(0x1a2133, 1.0)));
+        fill(&mut pm, &circle(cx, cy, d / 2.0 - 5.0), solid(c(look.raised, 1.0)));
         if let Some(f) = &m.face {
             let inner = d - 10.0;
             let f = imageops::resize(f, inner as u32, inner as u32, imageops::FilterType::Lanczos3);
@@ -176,11 +190,11 @@ pub fn card(office: &RgbaImage, s: &Stats, crew: &[Member], accent: [u8; 3], dat
     }
     if crew.len() > shown {
         let (cx, cy) = (ox + 34.0 + d / 2.0 + shown as f32 * (d + gap), oy + oh);
-        fill(&mut pm, &circle(cx, cy, d / 2.0 + 7.0), solid(rgb(BG_TOP, 1.0)));
-        fill(&mut pm, &circle(cx, cy, d / 2.0), solid(rgb(0x1a2133, 1.0)));
+        fill(&mut pm, &circle(cx, cy, d / 2.0 + 7.0), solid(gap_c));
+        fill(&mut pm, &circle(cx, cy, d / 2.0), solid(c(look.raised, 1.0)));
         let more = format!("+{}", crew.len() - shown);
         let mw = width(Font::Semi, &more, 34.0, 0.0);
-        text(&mut pm, Font::Semi, &more, cx - mw / 2.0, cy + 12.0, 34.0, rgb(TEXT, 1.0), 0.0);
+        text(&mut pm, Font::Semi, &more, cx - mw / 2.0, cy + 12.0, 34.0, text_c, 0.0);
     }
 
     // the numbers
@@ -189,16 +203,16 @@ pub fn card(office: &RgbaImage, s: &Stats, crew: &[Member], accent: [u8; 3], dat
     let tw = (w - 2.0 * M - 3.0 * tg) / 4.0;
     for (i, (v, l)) in tiles.iter().enumerate() {
         let tx = M + i as f32 * (tw + tg);
-        fill(&mut pm, &rrect(tx, ty, tw, th, 24.0), solid(rgb(TEXT, 0.06)));
-        text(&mut pm, Font::Semi, v, tx + 24.0, ty + 66.0, 50.0, rgb(TEXT, 1.0), -0.5);
-        text(&mut pm, Font::Medium, l, tx + 24.0, ty + 102.0, 23.0, rgb(MUTED, 1.0), 0.0);
+        fill(&mut pm, &rrect(tx, ty, tw, th, 24.0), solid(c(look.surface, 1.0)));
+        text(&mut pm, Font::Semi, v, tx + 24.0, ty + 66.0, 50.0, text_c, -0.5);
+        text(&mut pm, Font::Medium, l, tx + 24.0, ty + 102.0, 23.0, muted, 0.0);
     }
 
     // footer
-    text(&mut pm, Font::Medium, "My agents have an office.", M, 1310.0, 26.0, rgb(TEXT, 0.92), 0.0);
+    text(&mut pm, Font::Medium, "My agents have an office.", M, 1310.0, 26.0, c(look.text, 0.92), 0.0);
     let repo = REPO.trim_start_matches("https://");
     let rw = width(Font::Mono, repo, 22.0, 0.0);
-    text(&mut pm, Font::Mono, repo, w - M - rw, 1309.0, 22.0, rgb(MUTED, 1.0), 0.0);
+    text(&mut pm, Font::Mono, repo, w - M - rw, 1309.0, 22.0, muted, 0.0);
 
     // the card is opaque, so premultiplied is straight
     RgbaImage::from_raw(W, H, pm.take()).unwrap()
@@ -212,8 +226,8 @@ fn plural(n: usize, what: &str) -> String {
     }
 }
 
-fn rgb(c: u32, a: f32) -> Color {
-    Color::from_rgba8((c >> 16) as u8, (c >> 8) as u8, c as u8, (a * 255.0).round() as u8)
+fn c(rgb: [u8; 3], a: f32) -> Color {
+    Color::from_rgba8(rgb[0], rgb[1], rgb[2], (a * 255.0).round() as u8)
 }
 
 fn with_alpha(mut c: Color, a: f32) -> Color {
@@ -227,7 +241,7 @@ fn solid(c: Color) -> tiny_skia::Shader<'static> {
 
 fn linear(a: (f32, f32), b: (f32, f32), stops: &[(f32, Color)]) -> tiny_skia::Shader<'static> {
     let stops = stops.iter().map(|&(p, c)| GradientStop::new(p, c)).collect();
-    LinearGradient::new(Point::from_xy(a.0, a.1), Point::from_xy(b.0, b.1), stops, SpreadMode::Pad, Transform::identity()).unwrap_or(solid(rgb(BG_TOP, 1.0)))
+    LinearGradient::new(Point::from_xy(a.0, a.1), Point::from_xy(b.0, b.1), stops, SpreadMode::Pad, Transform::identity()).unwrap_or(solid(Color::TRANSPARENT))
 }
 
 fn fill(pm: &mut Pixmap, path: &Path, shader: tiny_skia::Shader) {
@@ -370,7 +384,8 @@ mod tests {
         let office = RgbaImage::from_pixel(1600, 1000, image::Rgba([60, 90, 140, 255]));
         let s = Stats { sessions: 2, agents: 4, tools: 312, tokens: 1_240_000, focus: 2 * 3600 + 14 * 60 };
         let crew: Vec<Member> = (0..9).map(|i| Member { face: None, ring: [200, 40 * i as u8, 90] }).collect();
-        let img = card(&office, &s, &crew, [59, 130, 246], "Sun 18 Oct 2026");
+        let look = Look { bg: [16, 19, 26], bg2: [11, 13, 18], surface: [24, 28, 36], raised: [34, 39, 50], text: [236, 239, 244], muted: [139, 147, 167], faint: [52, 58, 72], accent: [59, 130, 246], light: false };
+        let img = card(&office, &s, &crew, &look, "Sun 18 Oct 2026");
         assert_eq!(img.dimensions(), (W, H));
         let holes: Vec<_> = img.enumerate_pixels().filter(|p| p.2[3] != 255).map(|p| (p.0, p.1, p.2[3])).take(5).collect();
         assert!(holes.is_empty(), "the card is opaque: {holes:?}");

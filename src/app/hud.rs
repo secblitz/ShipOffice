@@ -40,7 +40,23 @@ fn sep<'a>() -> El<'a> {
 fn tool<'a>(i: Icon, tip: &'a str, msg: Message, on_: bool) -> El<'a> {
     let pal = p();
     let b = button(container(icon(i, 15.0, if on_ { pal.text } else { pal.muted })).center(Fill)).width(32).height(32).padding(0).style(style::flat(on_)).on_press(msg);
-    tooltip(b, container(t(tip, 11.5, pal.text)).padding([4, 8]).style(style::surface(7.0)), tooltip::Position::Top).gap(6).into()
+    tooltip(b, self::tip(tip), tooltip::Position::Top).gap(6).into()
+}
+
+/// A tooltip. Its shortcut, written after two spaces ("Zoom in  +"), shows as a key cap, and
+/// anything after " · " as a muted aside.
+fn tip<'a>(s: &'a str) -> El<'a> {
+    let pal = p();
+    let (label, rest) = s.split_once("  ").unwrap_or((s, ""));
+    let (key, aside) = rest.split_once(" · ").unwrap_or((rest, ""));
+    let mut r = row![t(label, 11.5, pal.text)].spacing(7).align_y(Alignment::Center);
+    if !key.is_empty() {
+        r = r.push(container(mono(key, 10.5, pal.muted)).padding([1, 5]).style(style::fill(pal.raised, 4.0)));
+    }
+    if !aside.is_empty() {
+        r = r.push(t(aside, 11.5, pal.muted));
+    }
+    container(r).padding([4, 8]).style(style::surface(7.0)).into()
 }
 
 /// An agent's face from their own sprite, ringed in their shirt colour; their initial if the
@@ -221,7 +237,7 @@ impl App {
             if sel {
                 // the active office can be rolled again, right where its name is
                 let dice = button(self.dice(13.0)).padding(3).style(style::flat(false)).on_press(Message::NewLayout);
-                body = body.push(tooltip(dice, container(t("New office for this session  N", 12.0, pal.text)).padding([5, 9]).style(style::surface(8.0)), tooltip::Position::Bottom).gap(8));
+                body = body.push(tooltip(dice, tip("New office for this session  N"), tooltip::Position::Bottom).gap(8));
             }
             button(body).padding(if sel { Padding { top: 4.0, bottom: 4.0, left: 12.0, right: 5.0 } } else { Padding::from([7, 12]) }).style(style::flat(sel)).on_press(Message::SelectTab(i)).into()
         }))
@@ -289,11 +305,11 @@ impl App {
             r,
             sep(),
             tool(Icon::Feed, "Live feed", Message::ToggleFeed, feed_open),
-            tooltip(button(container(self.dice(16.0)).center(Fill)).width(32).height(32).padding(0).style(style::flat(false)).on_press(Message::NewLayout), container(t("New office for this session  N", 12.0, pal.text)).padding([5, 9]).style(style::surface(8.0)), tooltip::Position::Top).gap(8),
+            tooltip(button(container(self.dice(16.0)).center(Fill)).width(32).height(32).padding(0).style(style::flat(false)).on_press(Message::NewLayout), tip("New office for this session  N"), tooltip::Position::Top).gap(8),
             sep(),
             tooltip(
                 button(row![icon(Icon::Bolt, 15.0, pal.accent), t("Locked in", 12.5, pal.text).font(UI_MEDIUM)].spacing(6).align_y(Alignment::Center)).padding([8, 11]).height(32).style(style::flat(false)).on_press(Message::LockedIn),
-                container(t("Share how locked in you are  L", 12.0, pal.text)).padding([5, 9]).style(style::surface(8.0)),
+                tip("Make a Locked in card to share  L"),
                 tooltip::Position::Top
             )
             .gap(8),
