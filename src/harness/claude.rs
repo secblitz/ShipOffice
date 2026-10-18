@@ -1,16 +1,19 @@
 //! Claude Code: `~/.claude/projects/<encoded-cwd>/<session>.jsonl`, plus one transcript per
 //! subagent under `<session>/subagents/` (and the two older layouts). See docs/harnesses.md §1.
 
-use super::{clip, env_path, home, modified, tool_summary, ts, Adapter, JsonlTail, SourceReader, SourceSpec};
+use super::{clip, env_path, home, modified, read_capped, tool_summary, ts, Adapter, JsonlTail, MAX_LINE, SourceReader, SourceSpec};
 use crate::model::{AgentRef, Event, EventKind, SessionKey, Usage};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
 pub struct ClaudeCode;
 
 const ID: &str = "claude-code";
+/// Biggest `meta.json` or `sessions/<pid>.json` that is read.
+const SIDE_FILE: u64 = 1024 * 1024;
 
 impl Adapter for ClaudeCode {
     fn id(&self) -> &'static str {
@@ -59,8 +62,7 @@ impl Adapter for ClaudeCode {
     fn open(&self, spec: &SourceSpec) -> Box<dyn SourceReader> {
         let root = spec.path.ancestors().find(|a| a.join("projects").is_dir()).map(Path::to_path_buf);
         let meta = match &spec.agent {
-            AgentRef::Sub(_) => std::fs::read(spec.path.with_extension("meta.json"))
-                .ok()
+            AgentRef::Sub(_) => read_capped(&spec.path.with_extension("meta.json"), SIDE_FILE)
                 .and_then(|b| serde_json::from_slice::<Value>(&b).ok()),
             AgentRef::Lead => None,
         };
@@ -107,10 +109,39 @@ fn subagents(dir: &Path, session: &str, since: SystemTime, out: &mut Vec<SourceS
     }
 }
 
+/// Every session's `(status, waitingFor)` from `sessions/<pid>.json`. One scan serves all the
+/// readers that ask within a second, whatever their number.
+fn statuses(dir: &Path) -> HashMap<String, (String, Option<String>)> {
+    type Scan = (PathBuf, Instant, HashMap<String, (String, Option<String>)>);
+    static CACHE: Mutex<Option<Scan>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((d, at, m)) = cache.as_ref() {
+        if d == dir && at.elapsed() < Duration::from_secs(1) {
+            return m.clone();
+        }
+    }
+    let mut found = HashMap::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        // only `<pid>.json`; the `.key` files beside them hold tokens and are never opened
+        if !name.ends_with(".json") || name.matches('.').count() != 1 {
+            continue;
+        }
+        let Some(v) = read_capped(&e.path(), SIDE_FILE).and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else { continue };
+        let Some(id) = v.get("sessionId").and_then(Value::as_str) else { continue };
+        let status = v.get("status").and_then(Value::as_str).unwrap_or("").to_owned();
+        found.insert(id.to_owned(), (status, v.get("waitingFor").and_then(Value::as_str).map(str::to_owned)));
+    }
+    *cache = Some((dir.to_path_buf(), Instant::now(), found.clone()));
+    found
+}
+
 fn first_session_id(path: &Path) -> Option<String> {
-    use std::io::BufRead;
+    use std::io::{BufRead, Read};
     let f = std::fs::File::open(path).ok()?;
-    std::io::BufReader::new(f).lines().take(5).flatten().find_map(|l| {
+    // a first line past the cap is cut short, fails to parse and is skipped
+    std::io::BufReader::new(f.take(MAX_LINE as u64)).lines().take(5).flatten().find_map(|l| {
         serde_json::from_str::<Value>(&l).ok()?.get("sessionId")?.as_str().map(str::to_owned)
     })
 }
@@ -141,26 +172,13 @@ impl Reader {
         }
         self.status_checked = Some(Instant::now());
         let Some(dir) = &self.sessions_dir else { return };
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
-        for e in entries.flatten() {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            // only `<pid>.json`; the `.key` files beside them hold tokens and are never opened
-            if !name.ends_with(".json") || name.matches('.').count() != 1 {
-                continue;
+        let Some((status, waiting_for)) = statuses(dir).remove(self.key.id.as_str()) else { return };
+        if self.last_status.as_deref() != Some(status.as_str()) {
+            if status == "waiting" {
+                let what = waiting_for.as_deref().unwrap_or("Waiting for your input");
+                out.push(self.ev(SystemTime::now(), EventKind::NeedsInput { text: clip(what, 80) }));
             }
-            let Some(v) = std::fs::read(e.path()).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else { continue };
-            if v.get("sessionId").and_then(Value::as_str) != Some(self.key.id.as_str()) {
-                continue;
-            }
-            let status = v.get("status").and_then(Value::as_str).unwrap_or("").to_owned();
-            if self.last_status.as_deref() != Some(status.as_str()) {
-                if status == "waiting" {
-                    let what = v.get("waitingFor").and_then(Value::as_str).unwrap_or("Waiting for your input");
-                    out.push(self.ev(SystemTime::now(), EventKind::NeedsInput { text: clip(what, 80) }));
-                }
-                self.last_status = Some(status);
-            }
+            self.last_status = Some(status);
         }
     }
 

@@ -1,7 +1,7 @@
 //! OpenAI Codex CLI: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`. Subagents get their own
 //! rollout whose `session_meta` names the parent thread. See docs/harnesses.md §2.
 
-use super::{clip, env_path, home, modified, tool_summary, ts, Adapter, JsonlTail, SourceReader, SourceSpec};
+use super::{clip, env_path, home, modified, tool_summary, ts, Adapter, JsonlTail, MAX_LINE, SourceReader, SourceSpec};
 use crate::model::{AgentRef, Event, EventKind, SessionKey, Usage};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -78,10 +78,11 @@ fn walk(dir: &Path, since: SystemTime, depth: u8, out: &mut Vec<(PathBuf, System
 
 /// The first line says which thread this is and, for subagents, whose.
 fn read_head(path: &Path) -> Option<(String, Option<String>)> {
-    use std::io::BufRead;
+    use std::io::{BufRead, Read};
     let f = std::fs::File::open(path).ok()?;
     let mut line = String::new();
-    std::io::BufReader::new(f).read_line(&mut line).ok()?;
+    // a first line past the cap is cut short and fails to parse
+    std::io::BufReader::new(f.take(MAX_LINE as u64)).read_line(&mut line).ok()?;
     let v: Value = serde_json::from_str(&line).ok()?;
     let p = &v["payload"];
     let own = p.get("id").and_then(Value::as_str)?.to_owned();

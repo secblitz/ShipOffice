@@ -17,6 +17,9 @@ pub enum Update {
     Harnesses(Vec<(String, String, usize)>),
 }
 
+/// How long a quiet source keeps its read position; the UI forgets sessions idle this long too.
+pub const IDLE_CLOSE: Duration = Duration::from_secs(6 * 3600);
+
 struct Open {
     reader: Box<dyn SourceReader>,
     seen: Instant,
@@ -55,14 +58,15 @@ fn run(config: Arc<RwLock<Config>>, tx: Sender<Update>) {
                     entry.seen = Instant::now();
                 }
             }
-            // files that fell out of the active window are closed
-            open.retain(|_, o| o.seen.elapsed() < Duration::from_secs(30));
+            // files that fell out of the active window stop being polled but keep their offset, so a
+            // resumed session continues instead of replaying its transcript; long-idle ones are closed
+            open.retain(|_, o| o.seen.elapsed() < IDLE_CLOSE);
             if tx.send(Update::Harnesses(found)).is_err() {
                 return;
             }
         }
         let mut batch = Vec::new();
-        for o in open.values_mut() {
+        for o in open.values_mut().filter(|o| o.seen.elapsed() < Duration::from_secs(30)) {
             batch.extend(o.reader.poll());
         }
         if !batch.is_empty() {

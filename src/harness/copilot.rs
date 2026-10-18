@@ -4,7 +4,7 @@
 //!
 //! `config.json` beside the sessions can hold plaintext tokens and is never opened.
 
-use super::{clip, env_path, home, modified, tool_summary, ts, Adapter, JsonlTail, SourceReader, SourceSpec};
+use super::{clip, env_path, home, modified, read_capped, tool_summary, ts, Adapter, JsonlTail, SourceReader, SourceSpec};
 use crate::model::{AgentRef, Event, EventKind, SessionKey, Usage};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -187,7 +187,7 @@ impl Reader {
 
 /// The top-level `key: value` pairs of `workspace.yaml`, which is all this needs from it.
 fn yaml_fields(path: &Path) -> HashMap<String, String> {
-    let Ok(text) = std::fs::read_to_string(path) else { return HashMap::new() };
+    let Some(text) = read_capped(path, 1024 * 1024).and_then(|b| String::from_utf8(b).ok()) else { return HashMap::new() };
     text.lines()
         .filter(|l| !l.starts_with([' ', '\t', '#', '-']))
         .filter_map(|l| l.split_once(':'))

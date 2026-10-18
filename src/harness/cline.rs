@@ -5,7 +5,7 @@
 //! `~/.cline/data/sessions/<id>/<id>.messages.json` instead, in place. See docs/harnesses.md §7,
 //! §8a and the globalStorage section.
 
-use super::{any_ts, clip, env_path, home, modified, tool_summary, Adapter, JsonFile, SourceReader, SourceSpec};
+use super::{any_ts, clip, env_path, home, modified, read_capped, tool_summary, Adapter, JsonFile, SourceReader, SourceSpec};
 use crate::model::{AgentRef, Event, EventKind, SessionKey, Usage};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -43,7 +43,7 @@ impl Cline {
         if let Some(r) = roots.get(dir) {
             return r.clone();
         }
-        let Some(item) = std::fs::read(dir.join("history_item.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else {
+        let Some(item) = read_capped(&dir.join("history_item.json"), 1024 * 1024).and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else {
             // written a moment after the task starts; look again next scan
             return id.to_owned();
         };
@@ -122,7 +122,7 @@ impl Adapter for Cline {
             Box::new(Legacy {
                 base,
                 file: JsonFile::new(spec.path.clone()),
-                item: std::fs::read(dir.join("history_item.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()),
+                item: read_capped(&dir.join("history_item.json"), 1024 * 1024).and_then(|b| serde_json::from_slice(&b).ok()),
                 history: dir.parent().and_then(Path::parent).map(|r| r.join("state").join("taskHistory.json")),
                 task_id: dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 seen: HashMap::new(),
@@ -239,7 +239,12 @@ impl Legacy {
                     .map(PathBuf::from)
             })
             // fallback: the environment details the first request carried
-            .or_else(|| msgs.iter().find_map(|m| between(m.get("text")?.as_str()?, "Current Working Directory (", ")").map(PathBuf::from)));
+            .or_else(|| {
+                if self.cwd_known {
+                    return None;
+                }
+                msgs.iter().find_map(|m| between(m.get("text")?.as_str()?, "Current Working Directory (", ")").map(PathBuf::from))
+            });
         let title = msgs
             .iter()
             .find(|m| m.get("say").and_then(Value::as_str) == Some("task"))
@@ -514,13 +519,16 @@ impl SourceReader for Sdk {
         if fresh.is_none() && settled == self.settled {
             return out;
         }
-        if let Some(v) = fresh {
+        if let Some(mut v) = fresh {
             if !self.base.started {
                 if let AgentRef::Sub(id) = &self.base.agent {
                     out.push(self.base.ev(SystemTime::now(), EventKind::SubagentStart { agent_id: id.clone(), description: "Subagent".into(), kind: None }));
                 }
             }
-            self.msgs = v["messages"].as_array().cloned().unwrap_or_default();
+            self.msgs = match v.get_mut("messages").map(Value::take) {
+                Some(Value::Array(a)) => a,
+                _ => Vec::new(),
+            };
             self.changed = Some(Instant::now());
             if self.msgs.len() < self.done {
                 // compacted or rewound: carry on from the new end

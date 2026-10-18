@@ -5,7 +5,7 @@
 //!
 //! `~/.factory/.env` and the `auth*` files hold secrets and are never opened.
 
-use super::{clip, env_path, home, modified, tool_summary, ts, Adapter, JsonFile, JsonlTail, SourceReader, SourceSpec};
+use super::{clip, env_path, home, modified, tool_summary, ts, Adapter, JsonFile, JsonlTail, MAX_LINE, SourceReader, SourceSpec};
 use crate::model::{AgentRef, Event, EventKind, SessionKey, Usage};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -89,10 +89,11 @@ fn walk(dir: &Path, since: SystemTime, depth: u8, out: &mut Vec<(PathBuf, System
 
 /// `session_start` names the session and, for a subagent, the session that called it.
 fn read_head(path: &Path) -> Option<(String, Option<String>)> {
-    use std::io::BufRead;
+    use std::io::{BufRead, Read};
     let f = std::fs::File::open(path).ok()?;
     let mut line = String::new();
-    std::io::BufReader::new(f).read_line(&mut line).ok()?;
+    // a first line past the cap is cut short and fails to parse
+    std::io::BufReader::new(f.take(MAX_LINE as u64)).read_line(&mut line).ok()?;
     let v: Value = serde_json::from_str(&line).ok()?;
     let stem = path.file_stem()?.to_string_lossy().into_owned();
     let own = v.get("id").and_then(Value::as_str).map(str::to_owned).unwrap_or(stem);

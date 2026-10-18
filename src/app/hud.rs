@@ -365,7 +365,6 @@ impl App {
         let h = self.scene.heads.iter().find(|h| h.id == id)?;
         let (sx, sy) = self.cam.to_screen(h.x, (h.top + h.bottom) / 2.0);
         let role = if a.lead { format!("Lead · {}", s.model.clone().unwrap_or_else(|| s.harness_name.clone())) } else { st.and_then(|st| st.kind.clone()).unwrap_or_else(|| "Helper".into()) };
-        let c = rgb8(a.color());
         let head = row![
             face(a, 38.0),
             column![t(clip(&a.name, 30), 14.0, pal.text).font(UI_BOLD), t(clip(&role, 38), 11.5, pal.muted)].spacing(1).width(Fill),

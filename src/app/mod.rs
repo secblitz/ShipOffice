@@ -37,6 +37,8 @@ const PAD_BOTTOM: f32 = 72.0;
 #[derive(Debug, Clone)]
 pub enum Message {
     Tick(Instant),
+    /// the window is shown (true) or minimized (false)
+    Visible(bool),
     Stage(Size),
     ScaleFactor(f32),
     SelectTab(usize),
@@ -155,6 +157,8 @@ pub struct App {
     pub active: usize,
     pub cam: Camera,
     pub stage: Size,
+    /// minimized windows tick slowly
+    hidden: bool,
     scale_factor: f32,
     pub scene: Scene,
     pub hover: Option<Hit>,
@@ -244,6 +248,7 @@ impl App {
             tabs: Vec::new(),
             active: 0,
             cam: Camera::new(),
+            hidden: false,
             stage: Size::new(1320.0, 840.0),
             scale_factor: 1.0,
             scene: Scene::default(),
@@ -319,9 +324,14 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let fps = 30;
+        let every = if self.hidden { Duration::from_millis(500) } else { Duration::from_millis(1000 / 30) };
         Subscription::batch([
-            iced::time::every(Duration::from_millis(1000 / fps)).map(Message::Tick),
+            iced::time::every(every).map(Message::Tick),
+            window::events().filter_map(|(_, e)| match e {
+                window::Event::Resized(s) => Some(Message::Visible(s.width > 0.0 && s.height > 0.0)),
+                window::Event::Focused => Some(Message::Visible(true)),
+                _ => None,
+            }),
             keyboard::listen().map(Message::Key),
         ])
     }
@@ -332,6 +342,7 @@ impl App {
                 self.tick(now);
                 return self.debug_shot();
             }
+            Message::Visible(v) => self.hidden = !v,
             Message::Shot(shot) => {
                 if let Ok(path) = std::env::var("SHIPOFFICE_SCREENSHOT") {
                     let (w, h) = (shot.size.width, shot.size.height);
@@ -446,7 +457,10 @@ impl App {
             Message::Window(a) => {
                 return match a {
                     WindowAction::Drag => window::latest().and_then(window::drag),
-                    WindowAction::Minimize => window::latest().and_then(|id| window::minimize(id, true)),
+                    WindowAction::Minimize => {
+                        self.hidden = true;
+                        window::latest().and_then(|id| window::minimize(id, true))
+                    }
                     WindowAction::ToggleMaximize => window::latest().and_then(window::toggle_maximize),
                     WindowAction::Close => window::latest().and_then(window::close),
                     WindowAction::Resize(dir) => window::latest().and_then(move |id| window::drag_resize(id, dir)),
@@ -612,6 +626,9 @@ impl App {
         }
         let disabled: Vec<String> = cfg.harness.iter().filter(|(_, h)| !h.enabled).map(|(k, _)| k.clone()).collect();
         self.sessions.retain(|k, _| !disabled.iter().any(|d| d == k.harness));
+        // long-idle sessions go, as the watcher lets go of their files at the same point
+        let tabs = &self.tabs;
+        self.sessions.retain(|k, s| fresh(s) || tabs.iter().any(|t| t.key == *k) || now.duration_since(s.last).unwrap_or_default() < sources::IDLE_CLOSE);
         let mut live: Vec<&Session> = self.sessions.values().filter(|s| fresh(s)).collect();
         live.sort_by(|a, b| b.last.cmp(&a.last));
         live.truncate(cfg.max_tabs.max(1));
@@ -735,7 +752,9 @@ impl App {
                 t.building = false;
             }
         }
-        let stats = self.session().map(board_stats);
+        // the board hangs on the back wall: nothing to repaint while that wall is out of sight
+        let back = self.tab().is_some_and(|t| self.view_of(t).behind(view::Wall::Back));
+        let stats = if back { self.session().map(board_stats) } else { None };
         let Some(t) = self.tabs.get_mut(self.active) else { return };
         if t.statics.is_none() && !t.building {
             t.building = true;
@@ -959,7 +978,8 @@ fn board_stats(s: &Session) -> BoardStats {
     BoardStats {
         elapsed: secs(s.started),
         working: s.status == Status::Working,
-        waiting: secs(s.status_since),
+        // only shown while waiting
+        waiting: if s.status == Status::Working { 0 } else { secs(s.status_since) },
         tok_in: u.total_in(),
         tok_out: u.output,
         cache: u.cache_read as f32 / total_in as f32,

@@ -3,7 +3,7 @@
 //! `$rewindTo` lines. Subagents write `chats/<parent session id>/<agent id>.jsonl`. Older builds
 //! rewrote one `session-*.json` whole. See docs/harnesses.md §4.
 
-use super::{clip, env_path, home, modified, tool_summary, ts, Adapter, JsonFile, JsonlTail, SourceReader, SourceSpec};
+use super::{clip, env_path, home, modified, read_capped, tool_summary, ts, Adapter, JsonFile, JsonlTail, SourceReader, SourceSpec};
 use crate::model::{AgentRef, Event, EventKind, SessionKey, Usage};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -76,8 +76,8 @@ impl Adapter for GeminiCli {
             .path
             .ancestors()
             .find(|a| a.file_name().is_some_and(|n| n == "chats"))
-            .and_then(|chats| std::fs::read_to_string(chats.with_file_name(".project_root")).ok())
-            .map(|s| PathBuf::from(s.trim()))
+            .and_then(|chats| read_capped(&chats.with_file_name(".project_root"), 4096))
+            .map(|b| PathBuf::from(String::from_utf8_lossy(&b).trim()))
             .filter(|p| !p.as_os_str().is_empty());
         Box::new(Reader {
             key: spec.key.clone(),
@@ -307,7 +307,13 @@ impl SourceReader for Reader {
             Source::Log(t) => t.read(),
             Source::Whole(f) => match f.read() {
                 // the whole session again; the per-id diff keeps only what is new
-                Some(v) => std::iter::once(v.clone()).chain(v["messages"].as_array().cloned().unwrap_or_default()).collect(),
+                Some(mut v) => {
+                    let msgs = match v.get_mut("messages").map(Value::take) {
+                        Some(Value::Array(a)) => a,
+                        _ => Vec::new(),
+                    };
+                    std::iter::once(v).chain(msgs).collect()
+                }
                 None => Vec::new(),
             },
         };

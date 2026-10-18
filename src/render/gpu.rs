@@ -49,8 +49,10 @@ struct Globals {
 }
 
 const MIP_LEVELS: u32 = 4;
-/// textures not drawn for this many frames are dropped (another tab's crew, say)
+/// textures not drawn for this many frames are dropped (another tab's crew, say), but only once
+/// the office textures hold more than `BUDGET`: decoding a sheet again costs far more than keeping it
 const EVICT_AFTER: u64 = 600;
+const BUDGET: u64 = 256 * 1024 * 1024;
 
 impl shader::Pipeline for Pipeline {
     fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
@@ -118,6 +120,9 @@ impl shader::Pipeline for Pipeline {
     }
 
     fn trim(&mut self) {
+        if self.texture_bytes() <= BUDGET {
+            return;
+        }
         let frame = self.frame;
         self.textures.retain(|k, t| matches!(k, TexKey::Fx(_) | TexKey::Atlas(_)) || frame - t.used < EVICT_AFTER);
     }

@@ -5,7 +5,7 @@
 //!
 //! The format has prompts, answers, applied edits and token lines, but no times or tool calls.
 
-use super::{clip, env_path, modified, Adapter, SourceReader, SourceSpec};
+use super::{clip, env_path, modified, Adapter, MAX_LINE, SourceReader, SourceSpec};
 use crate::model::{AgentRef, Event, EventKind, SessionKey, Usage};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -51,6 +51,8 @@ impl Adapter for Aider {
         files
             .into_iter()
             .filter_map(|p| {
+                // a symlink could point this at any readable file
+                std::fs::symlink_metadata(&p).ok().filter(|m| m.file_type().is_file())?;
                 let m = modified(&p).filter(|m| *m >= since)?;
                 // one reader per file; it switches sessions at each header
                 Some(SourceSpec { key: SessionKey { harness: ID, id: file_key(&p) }, agent: AgentRef::Lead, path: p, modified: m })
@@ -69,6 +71,7 @@ impl Adapter for Aider {
             // mid-file: drop the cut line, and wait for a session header before trusting anything
             skip_first: len > BACKLOG,
             partial: Vec::new(),
+            skipping: false,
             first_at: modified(&spec.path).unwrap_or_else(SystemTime::now),
             started: false,
             in_session: len <= BACKLOG,
@@ -95,6 +98,8 @@ struct Reader {
     offset: u64,
     skip_first: bool,
     partial: Vec<u8>,
+    /// inside a line over [`MAX_LINE`], dropped until its newline
+    skipping: bool,
     first_at: SystemTime,
     started: bool,
     in_session: bool,
@@ -126,8 +131,21 @@ impl Reader {
         let mut buf = Vec::new();
         let n = f.take(PER_POLL).read_to_end(&mut buf).unwrap_or(0);
         self.offset += n as u64;
-        self.partial.extend_from_slice(&buf[..n]);
-        let Some(end) = self.partial.iter().rposition(|&b| b == b'\n') else { return Vec::new() };
+        let mut chunk = &buf[..n];
+        if self.skipping {
+            // the rest of a line that was too long: drop it up to its newline
+            let Some(i) = chunk.iter().position(|&b| b == b'\n') else { return Vec::new() };
+            chunk = &chunk[i + 1..];
+            self.skipping = false;
+        }
+        self.partial.extend_from_slice(chunk);
+        let Some(end) = self.partial.iter().rposition(|&b| b == b'\n') else {
+            if self.partial.len() > MAX_LINE {
+                self.partial = Vec::new();
+                self.skipping = true;
+            }
+            return Vec::new();
+        };
         let done: Vec<u8> = self.partial.drain(..=end).collect();
         let mut out: Vec<String> = String::from_utf8_lossy(&done).lines().map(str::to_owned).collect();
         if std::mem::take(&mut self.skip_first) && !out.is_empty() {

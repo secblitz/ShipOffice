@@ -83,6 +83,16 @@ pub fn env_path(var: &str) -> Option<PathBuf> {
     std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
+/// A small side file (`meta.json`, `.project_root`, ...) read whole; `None` when it isn't a regular
+/// file or is bigger than `limit` bytes.
+pub fn read_capped(path: &Path, limit: u64) -> Option<Vec<u8>> {
+    let m = std::fs::metadata(path).ok()?;
+    if !m.is_file() || m.len() > limit {
+        return None;
+    }
+    std::fs::read(path).ok()
+}
+
 pub fn modified(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
@@ -214,10 +224,12 @@ pub struct JsonlTail {
 }
 
 pub const MAX_LINE: usize = 512 * 1024;
+/// How much of an existing transcript is read on first open. Totals (cost, tokens, tools) come from
+/// it, so it stays generous; [`PER_POLL`] spreads the reading over a few polls.
 pub const BACKLOG: u64 = 64 * 1024 * 1024;
 const CHUNK: usize = 1024 * 1024;
 /// Most bytes one poll reads, so one huge file can't hold up every other session.
-const PER_POLL: u64 = 96 * 1024 * 1024;
+const PER_POLL: u64 = 8 * 1024 * 1024;
 
 impl JsonlTail {
     /// When the file last changed.

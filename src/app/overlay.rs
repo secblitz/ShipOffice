@@ -12,6 +12,9 @@ use crate::render::Camera;
 use iced::mouse::{self, Cursor};
 use iced::widget::canvas::{self, Action, Event, Frame, Geometry, Path, Stroke, Text};
 use iced::{alignment, Color, Font, Point, Rectangle, Renderer, Size, Theme, Vector};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::OnceLock;
 
 pub struct Overlay<'a> {
@@ -209,12 +212,20 @@ pub fn measure(s: &str, size: f32, which: Font) -> f32 {
 fn wrap(text: &str, size: f32, max: f32) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut cur = String::new();
+    let mut cur_w = 0.0;
+    let space = measure(" ", size, UI);
     for w in text.split_whitespace() {
-        let t = if cur.is_empty() { w.to_owned() } else { format!("{cur} {w}") };
-        if measure(&t, size, UI) > max && !cur.is_empty() {
+        let ww = measure(w, size, UI);
+        if cur.is_empty() {
+            cur = w.to_owned();
+            cur_w = ww;
+        } else if cur_w + space + ww > max {
             lines.push(std::mem::replace(&mut cur, w.to_owned()));
+            cur_w = ww;
         } else {
-            cur = t;
+            cur.push(' ');
+            cur.push_str(w);
+            cur_w += space + ww;
         }
     }
     if !cur.is_empty() {
@@ -225,6 +236,30 @@ fn wrap(text: &str, size: f32, max: f32) -> Vec<String> {
         lines[2].push('…');
     }
     lines
+}
+
+type Wrapped = Rc<(Vec<String>, f32)>;
+
+/// The wrapped lines of a speech bubble and the widest one, remembered because the text and
+/// size only change while a bubble pops in.
+fn wrapped(text: &str, k: f32) -> Wrapped {
+    thread_local! {
+        static CACHE: RefCell<HashMap<(String, u32), Wrapped>> = RefCell::new(HashMap::new());
+    }
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() > 256 {
+            c.clear();
+        }
+        c.entry((text.to_owned(), k.to_bits()))
+            .or_insert_with(|| {
+                let size = 10.5 * k;
+                let lines = wrap(text, size, 128.0 * k);
+                let widest = lines.iter().map(|l| measure(l, size, UI)).fold(0.0, f32::max);
+                Rc::new((lines, widest))
+            })
+            .clone()
+    })
 }
 
 fn label(f: &mut Frame, s: &str, x: f32, baseline: f32, size: f32, color: Color, font: Font) {
@@ -265,9 +300,8 @@ fn bubble_size(kind: BubbleKind, text: &str, k: f32) -> (f32, f32) {
     if kind == BubbleKind::Tool {
         return (measure(&tool_text(text), 9.0 * k, MONO) + 12.0 * k, 17.0 * k);
     }
-    let size = 10.5 * k;
-    let lines = wrap(text, size, 128.0 * k);
-    let w = lines.iter().map(|l| measure(l, size, UI)).fold(0.0, f32::max) + 16.0 * k;
+    let (lines, widest) = &*wrapped(text, k);
+    let w = widest + 16.0 * k;
     (w, (lines.len() as f32 * 13.0 + 9.0) * k + 10.0 * k)
 }
 
@@ -287,8 +321,8 @@ fn bubble(f: &mut Frame, kind: BubbleKind, text: &str, accent: Color, x: f32, y0
         return;
     }
     let size = 10.5 * k;
-    let lines = wrap(text, size, 128.0 * k);
-    let w = lines.iter().map(|l| measure(l, size, UI)).fold(0.0, f32::max) + 16.0 * k;
+    let (lines, widest) = &*wrapped(text, k);
+    let w = widest + 16.0 * k;
     let h = (lines.len() as f32 * 13.0 + 9.0) * k;
     let (bx, by) = (x - w / 2.0, y - h - 10.0 * k);
     let think = kind == BubbleKind::Think;
