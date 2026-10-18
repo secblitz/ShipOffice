@@ -8,7 +8,6 @@ use super::style::{self, alpha, on, p, rgb8, MONO, UI_BOLD, UI_MEDIUM};
 use super::{App, HarnessChoice, Message, Setting, WindowAction};
 use crate::office::gen::THEMES;
 use crate::office::world::SeatRef;
-use crate::office::{iso, TW};
 use crate::render::paint::{fmt_k, fmt_t};
 use crate::render::scene::Hit;
 use crate::session::{Session, Status};
@@ -18,12 +17,13 @@ use std::time::SystemTime;
 
 type El<'a> = Element<'a, Message>;
 
+// Advanced shaping everywhere: basic shaping drops glyphs of text that changes every frame
 fn t<'a>(s: impl text::IntoFragment<'a>, size: f32, color: Color) -> text::Text<'a> {
-    text(s).size(size).color(color)
+    text(s).size(size).color(color).shaping(text::Shaping::Advanced)
 }
 
 fn mono<'a>(s: impl text::IntoFragment<'a>, size: f32, color: Color) -> text::Text<'a> {
-    text(s).size(size).color(color).font(MONO)
+    text(s).size(size).color(color).font(MONO).shaping(text::Shaping::Advanced)
 }
 
 fn dot<'a>(c: Color, d: f32) -> El<'a> {
@@ -99,6 +99,23 @@ fn no_scrollbar() -> scrollable::Direction {
 }
 
 impl App {
+    /// How far along a card's entrance is (eased 0..1).
+    fn enter(&self, key: &str) -> f32 {
+        self.opened.get(key).map_or(1.0, |t| style::entrance(*t, 0.22))
+    }
+
+    /// A status dot; a working one breathes.
+    fn status_dot(&self, s: Status, d: f32) -> El<'static> {
+        let c = status_color(s);
+        let c = if s == Status::Working {
+            let t = self.started_secs();
+            alpha(c, c.a * (0.55 + 0.45 * (0.5 + 0.5 * (t * 3.2).sin())))
+        } else {
+            c
+        };
+        dot(c, d)
+    }
+
     pub fn view(&self) -> El<'_> {
         let pal = p();
         let bg = container(Space::new().width(Fill).height(Fill)).style(move |_| container::Style {
@@ -106,7 +123,7 @@ impl App {
             ..Default::default()
         });
         let cfg = self.config();
-        let overlay = canvas(Overlay { scene: &self.scene, world: self.tab().map(|t| &t.world), cam: &self.cam, hover: self.hover, selected: self.selected, bubbles: cfg.bubbles, stage: self.stage }).width(Fill).height(Fill);
+        let overlay = canvas(Overlay { scene: &self.scene, world: self.tab().map(|t| &t.world), cam: &self.cam, hover: self.hover, selected: self.selected, bubbles: cfg.bubbles, stage: self.stage, view: self.tab().map(|t| self.view_of(t)) }).width(Fill).height(Fill);
         let mut layers: Vec<El> = vec![bg.into()];
         if self.tab().is_some() {
             layers.push(self.view_office());
@@ -135,13 +152,15 @@ impl App {
         let top = row![left, self.grab_area(), self.window_bar()].spacing(8).align_y(Alignment::Start);
         let mut middle = row![Space::new().width(Fill)].height(Fill);
         if feed_open && self.tab().is_some() {
-            middle = middle.push(opaque(self.feed()));
+            let e = self.enter("feed");
+            middle = middle.push(opaque(style::faded(e, || container(self.feed()).padding(Padding { left: (1.0 - e) * 16.0, ..Padding::ZERO }))));
         }
         let mut col = column![top, middle].spacing(10).padding(Padding { top: 10.0, right: 12.0, bottom: 12.0, left: 12.0 });
         if self.tab().is_some() {
             let mut bottom = column![].spacing(8).align_x(Alignment::Center).width(Fill);
             if self.crew_open {
-                bottom = bottom.push(opaque(self.crew_list()));
+                let e = self.enter("crew");
+                bottom = bottom.push(opaque(style::faded(e, || container(self.crew_list()).padding(Padding { top: (1.0 - e) * 10.0, ..Padding::ZERO }))));
             }
             bottom = bottom.push(opaque(self.toolbar(feed_open)));
             col = col.push(bottom);
@@ -160,7 +179,8 @@ impl App {
         if cfg!(target_os = "macos") {
             r = r.push(Space::new().width(64)); // the traffic lights sit here
         }
-        r = r.push(container(row![container(Space::new()).width(10).height(10).style(style::fill(pal.accent, 3.0)), t("ShipOffice", 13.0, pal.text).font(UI_BOLD)].spacing(8).align_y(Alignment::Center)).padding([0, 10]));
+        // the wordmark: two weights of one word, no glyph
+        r = r.push(container(row![t("Ship", 14.0, pal.text).font(UI_BOLD), t("Office", 14.0, pal.accent).font(UI_BOLD)].spacing(0).align_y(Alignment::Center)).padding([0, 10]));
         if !self.tabs.is_empty() {
             r = r.push(sep());
         }
@@ -169,7 +189,7 @@ impl App {
             let status = s.map_or(Status::Idle, |s| s.status);
             let name = s.map_or_else(|| "…".into(), |s| s.project());
             let sel = i == self.active;
-            let body = row![dot(status_color(status), 7.0), t(clip(&name, 22), 13.0, if sel { pal.text } else { pal.muted }).font(if sel { UI_BOLD } else { UI_MEDIUM })].spacing(8).align_y(Alignment::Center);
+            let body = row![self.status_dot(status, 7.0), t(clip(&name, 22), 13.0, if sel { pal.text } else { pal.muted }).font(if sel { UI_BOLD } else { UI_MEDIUM })].spacing(8).align_y(Alignment::Center);
             button(body).padding([7, 12]).style(style::flat(sel)).on_press(Message::SelectTab(i)).into()
         }))
         .spacing(2);
@@ -183,9 +203,9 @@ impl App {
         let ctx = (s.context as f32 / s.context_window() as f32).clamp(0.0, 1.0);
         let ctx_color = if ctx > 0.85 { pal.danger } else { pal.muted };
         let mut r = row![
-            dot(status_color(s.status), 8.0),
+            self.status_dot(s.status, 8.0),
             t(status_label(s.status), 12.5, pal.text).font(UI_BOLD),
-            mono(fmt_t(ago(s.status_since)), 11.5, pal.text),
+            mono(fmt_t(ago(s.status_since)), 11.5, pal.muted),
             t("·", 12.0, pal.muted),
             mono(format!("${:.2}", s.cost_estimate()), 11.5, pal.text),
             t("·", 12.0, pal.muted),
@@ -229,6 +249,15 @@ impl App {
             sep(),
             crew_btn,
             tool(Icon::Follow, "Follow the selected agent  F", Message::Follow, self.follow),
+            sep(),
+            tool(Icon::TurnLeft, "Turn left  Q · right-drag to orbit", Message::Turn(std::f32::consts::FRAC_PI_2), false),
+            tool(Icon::TurnRight, "Turn right  E", Message::Turn(-std::f32::consts::FRAC_PI_2), false),
+        ]
+        .spacing(2)
+        .align_y(Alignment::Center);
+        let r = if self.turned() { r.push(tool(Icon::Reset, "Back to the classic angle  R", Message::ResetView, false)) } else { r };
+        let r = row![
+            r,
             sep(),
             tool(Icon::Feed, "Live feed", Message::ToggleFeed, feed_open),
             tool(Icon::Shuffle, "New office layout", Message::NewLayout, false),
@@ -285,18 +314,23 @@ impl App {
     }
 
     /// Hangs a card off a stage point, flipping sides so it stays on screen.
-    fn hang<'a>(&self, card: El<'a>, sx: f32, sy: f32, w: f32, h: f32) -> El<'a> {
+    fn hang<'a>(&self, card: El<'a>, sx: f32, sy: f32, w: f32, h: f32, e: f32) -> El<'a> {
         let (sw, sh) = (self.stage.width, self.stage.height);
         let mut x = sx + 28.0;
         if x + w > sw - 12.0 {
             x = sx - w - 28.0;
         }
         x = x.clamp(12.0, (sw - w - 12.0).max(12.0));
-        let y = (sy - h * 0.35).clamp(112.0, (sh - h - 80.0).max(112.0));
+        let y = (sy - h * 0.35).clamp(112.0, (sh - h - 80.0).max(112.0)) + (1.0 - e) * 10.0;
         pin(opaque(card)).x(x).y(y).width(Fill).height(Fill).into()
     }
 
     fn inspector(&self) -> Option<El<'_>> {
+        let e = self.enter("inspector");
+        style::faded(e, || self.inspector_card(e))
+    }
+
+    fn inspector_card(&self, e: f32) -> Option<El<'_>> {
         let pal = p();
         let id = self.selected?;
         let tab = self.tab()?;
@@ -317,7 +351,7 @@ impl App {
         .align_y(Alignment::Center);
         let mut col = column![head, row![badge(&a.label)]].spacing(10);
         if let Some((_, said)) = &a.last_said {
-            col = col.push(container(t(clip(said, 180), 12.5, pal.text)).padding([8, 10]).width(Fill).style(style::inset));
+            col = col.push(container(t(clip(said, 180), 12.5, pal.text)).padding([8, 10]).width(Fill).style(style::inset()));
         }
         let seat = match a.seated {
             Some(SeatRef::Desk(i)) => format!("Desk {}", i + 1),
@@ -338,25 +372,31 @@ impl App {
             col = col.push(column(hist).spacing(4));
         }
         let fg = if self.follow { on(pal.accent) } else { pal.text };
+        let follow_on = self.follow;
         let follow = button(row![icon(Icon::Follow, 14.0, fg), t(if self.follow { "Following" } else { "Follow" }, 12.5, fg).font(UI_MEDIUM)].spacing(7).align_y(Alignment::Center))
             .padding([6, 12])
-            .style(if self.follow { style::primary } else { style::secondary })
+            .style(move |t, st| if follow_on { style::primary()(t, st) } else { style::secondary()(t, st) })
             .on_press(Message::Follow);
         col = col.push(row![follow, Space::new().width(Fill), tool(Icon::Left, "Previous", Message::Step(-1), false), tool(Icon::Right, "Next  Tab", Message::Step(1), false)].spacing(2).align_y(Alignment::Center));
-        let card = container(col).padding(14).width(300).style(style::card);
-        Some(self.hang(card.into(), sx, sy, 300.0, 300.0))
+        let card = container(col).padding(14).width(300).style(style::card());
+        Some(self.hang(card.into(), sx, sy, 300.0, 300.0, e))
     }
 
     fn board_card(&self) -> Option<El<'_>> {
-        let pal = p();
         if !self.board_open {
             return None;
         }
+        let e = self.enter("board");
+        style::faded(e, || self.board_card_inner(e))
+    }
+
+    fn board_card_inner(&self, e: f32) -> Option<El<'_>> {
+        let pal = p();
         let tab = self.tab()?;
         let s = self.sessions.get(&tab.key)?;
         let o = &tab.world.s.layout;
-        let (wx, wy) = iso((o.bx0 + o.bx1) as f32 / 2.0, 0.0);
-        let (sx, sy) = self.cam.to_screen(wx + (o.bx1 - o.bx0) as f32 * TW / 4.0, wy - 70.0);
+        let (wx, wy) = self.view_of(tab).project((o.bx0 + o.bx1) as f32 / 2.0, 0.0, crate::render::view::wall_height() * 0.6);
+        let (sx, sy) = self.cam.to_screen(wx, wy);
         let u = &s.usage;
         let cache = u.cache_read as f32 / u.total_in().max(1) as f32;
         let tools: u32 = s.tool_counts.values().sum();
@@ -383,8 +423,8 @@ impl App {
             column![row![t("Context window", 11.0, pal.muted), Space::new().width(Fill), mono(format!("{}% of {}", (ctx * 100.0).round(), fmt_k(s.context_window())), 11.0, pal.text)], bar].spacing(6),
         ]
         .spacing(12);
-        let card = container(col).padding(14).width(310).style(style::card);
-        Some(self.hang(card.into(), sx, sy, 310.0, 300.0))
+        let card = container(col).padding(14).width(310).style(style::card());
+        Some(self.hang(card.into(), sx, sy, 310.0, 300.0, e))
     }
 
     fn empty_state(&self) -> El<'_> {
@@ -402,17 +442,22 @@ impl App {
             t("Start a coding agent in any project. Its office opens here within a few seconds.", 13.0, pal.muted),
             scrollable(column(watched).spacing(6)).height(Length::Shrink).style(style::thin_scroll),
             row![
-                button(t("Show the demo crew", 12.5, on(pal.accent)).font(UI_MEDIUM)).padding([7, 14]).style(style::primary).on_press(Message::Setting(Setting::Demo(true))),
-                button(t("Settings", 12.5, pal.text).font(UI_MEDIUM)).padding([7, 14]).style(style::secondary).on_press(Message::ToggleSettings)
+                button(t("Show the demo crew", 12.5, on(pal.accent)).font(UI_MEDIUM)).padding([7, 14]).style(style::primary()).on_press(Message::Setting(Setting::Demo(true))),
+                button(t("Settings", 12.5, pal.text).font(UI_MEDIUM)).padding([7, 14]).style(style::secondary()).on_press(Message::ToggleSettings)
             ]
             .spacing(8),
         ]
         .spacing(14)
         .max_width(540);
-        container(opaque(container(col).padding(24).max_height(560).style(style::card))).center(Fill).into()
+        container(opaque(container(col).padding(24).max_height(560).style(style::card()))).center(Fill).into()
     }
 
     fn settings(&self) -> El<'_> {
+        let e = self.enter("settings");
+        style::faded(e, || self.settings_sheet(e))
+    }
+
+    fn settings_sheet(&self, e: f32) -> El<'_> {
         let pal = p();
         let cfg = self.config();
         let section = |s: &'static str| -> El<'static> { container(t(s, 12.0, pal.muted).font(UI_BOLD)).padding(Padding { top: 8.0, ..Padding::ZERO }).into() };
@@ -484,7 +529,7 @@ impl App {
             .align_y(Alignment::Center),
         );
         if !cfg.appearance.colors.is_empty() {
-            c = c.push(button(t("Reset colours to the preset", 12.0, pal.text).font(UI_MEDIUM)).padding([6, 12]).style(style::secondary).on_press(Message::Setting(Setting::ResetColors)));
+            c = c.push(button(t("Reset colours to the preset", 12.0, pal.text).font(UI_MEDIUM)).padding([6, 12]).style(style::secondary()).on_press(Message::Setting(Setting::ResetColors)));
         }
 
         c = c.push(section("Sources"));
@@ -506,7 +551,7 @@ impl App {
                 row![
                     pick_list(choices, self.path_harness.clone(), |h| Message::Setting(Setting::PathHarness(h))).text_size(12).padding([5, 8]).width(124).style(style::select).menu_style(style::menu),
                     text_input("~/path/to/sessions", &self.path_input).on_input(|s| Message::Setting(Setting::PathInput(s))).on_submit(Message::Setting(Setting::AddPath)).size(12).padding([5, 8]).style(style::input).font(MONO),
-                    button(t("Add", 12.0, on(pal.accent)).font(UI_MEDIUM)).padding([5, 12]).style(style::primary).on_press(Message::Setting(Setting::AddPath)),
+                    button(t("Add", 12.0, on(pal.accent)).font(UI_MEDIUM)).padding([5, 12]).style(style::primary()).on_press(Message::Setting(Setting::AddPath)),
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center)
@@ -520,7 +565,7 @@ impl App {
         c = c.push(switch("Demo crew when nothing is live", cfg.demo_when_empty, Setting::Demo));
         c = c.push(switch("Show frame rate", cfg.show_fps, Setting::ShowFps));
         let fps = row([12u32, 16, 24].into_iter().map(|v| -> El { button(mono(format!("{v}"), 11.5, if cfg.anim_fps == v { pal.text } else { pal.muted })).padding([5, 10]).style(style::flat(cfg.anim_fps == v)).on_press(Message::Setting(Setting::AnimFps(v))).into() })).spacing(2);
-        c = c.push(row![t("Animation frames per second", 12.5, pal.text).width(Fill), container(fps).padding(2).style(style::inset)].align_y(Alignment::Center));
+        c = c.push(row![t("Animation frames per second", 12.5, pal.text).width(Fill), container(fps).padding(2).style(style::inset())].align_y(Alignment::Center));
         c = c.push(
             column![
                 row![t("Sessions active in the last", 12.5, pal.text).width(Fill), mono(format!("{} min", cfg.active_minutes), 12.0, pal.text)],
@@ -538,13 +583,13 @@ impl App {
 
         c = c.push(section("Shortcuts"));
         let keys = [("1–9", "Switch tab"), ("Tab", "Next agent"), ("F", "Follow"), ("+  −  0", "Zoom, fit"), ("Esc", "Close")];
-        c = c.push(column(keys.iter().map(|(k, v)| -> El { row![t(*v, 12.0, pal.muted).width(Fill), container(mono(*k, 11.0, pal.text)).padding([2, 7]).style(style::inset)].align_y(Alignment::Center).into() })).spacing(5));
+        c = c.push(column(keys.iter().map(|(k, v)| -> El { row![t(*v, 12.0, pal.muted).width(Fill), container(mono(*k, 11.0, pal.text)).padding([2, 7]).style(style::inset())].align_y(Alignment::Center).into() })).spacing(5));
         let path = crate::config::Config::path().map(|p| tidy_path(&p)).unwrap_or_default();
-        c = c.push(row![mono(clip(&path, 38), 11.0, pal.muted).width(Fill), button(t("Open folder", 12.0, pal.text).font(UI_MEDIUM)).padding([5, 12]).style(style::secondary).on_press(Message::Setting(Setting::OpenConfigFolder))].align_y(Alignment::Center));
+        c = c.push(row![mono(clip(&path, 38), 11.0, pal.muted).width(Fill), button(t("Open folder", 12.0, pal.text).font(UI_MEDIUM)).padding([5, 12]).style(style::secondary()).on_press(Message::Setting(Setting::OpenConfigFolder))].align_y(Alignment::Center));
 
-        let panel = container(scrollable(container(c).padding(Padding { right: 12.0, ..Padding::ZERO })).style(style::thin_scroll)).padding(18).width(400).max_height((self.stage.height - 76.0).max(200.0)).style(style::card);
+        let panel = container(scrollable(container(c).padding(Padding { right: 12.0, ..Padding::ZERO })).style(style::thin_scroll)).padding(18).width(400).max_height((self.stage.height - 76.0).max(200.0)).style(style::card());
         let shade = mouse_area(container(Space::new()).width(Fill).height(Fill).style(move |_| container::Style { background: Some(iced::Background::Color(alpha(Color::BLACK, if pal.light { 0.12 } else { 0.3 }))), ..Default::default() })).on_press(Message::ToggleSettings);
-        stack![shade, container(opaque(panel)).align_right(Fill).padding(Padding { top: 62.0, right: 12.0, bottom: 12.0, left: 12.0 })].into()
+        stack![shade, container(opaque(panel)).align_right(Fill).padding(Padding { top: 62.0, right: 12.0 - (1.0 - e) * 24.0, bottom: 12.0, left: 12.0 })].into()
     }
 }
 

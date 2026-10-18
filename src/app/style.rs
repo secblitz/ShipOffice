@@ -62,7 +62,7 @@ const fn pal(bg: u32, bg2: u32, surface: u32, raised: u32, text: u32, muted: u32
 pub const PRESETS: [Preset; 8] = [
     Preset { id: "graphite", name: "Graphite", pal: pal(0x161618, 0x0c0c0d, 0x1e1e21, 0x2c2c31, 0xf5f5f6, 0xa7a7b0, 0x3d3d44, 0x5b8cff, 0x34d399, 0xfbbf24, 0xf87171, 0x60a5fa, false) },
     Preset { id: "midnight", name: "Midnight", pal: pal(0x0e1426, 0x070a14, 0x161d33, 0x222b48, 0xeef1ff, 0xa1abcf, 0x2f3a5e, 0x8b7bff, 0x4ade80, 0xfacc15, 0xfb7185, 0x7dd3fc, false) },
-    Preset { id: "paper", name: "Paper", pal: pal(0xf1efea, 0xe2ded5, 0xffffff, 0xf0ede6, 0x17171a, 0x5c5c66, 0xdcd7cc, 0x2f6bff, 0x0f9f6e, 0xb7700a, 0xd14343, 0x2563eb, true) },
+    Preset { id: "paper", name: "Paper", pal: pal(0xf1efea, 0xe2ded5, 0xffffff, 0xf0ede6, 0x17171a, 0x5c5c66, 0xdcd7cc, 0x2563eb, 0x0f9f6e, 0xb7700a, 0xd14343, 0x2563eb, true) },
     Preset { id: "forest", name: "Forest", pal: pal(0x101a15, 0x08100c, 0x17231d, 0x22332a, 0xeef6f0, 0x9fb7a8, 0x2e4237, 0x3ddc84, 0x3ddc84, 0xf5c451, 0xff7a7a, 0x7cc4ff, false) },
     Preset { id: "ember", name: "Ember", pal: pal(0x19130f, 0x0e0a08, 0x231b16, 0x33271f, 0xfcf4ed, 0xbca898, 0x46372d, 0xff7a3d, 0x6ee7a8, 0xffc857, 0xff6b6b, 0x7fb7ff, false) },
     Preset { id: "rose", name: "Rose", pal: pal(0x1a1117, 0x0f090d, 0x24171f, 0x34222d, 0xfdf0f6, 0xc6a6b8, 0x48303e, 0xff5c9a, 0x5eead4, 0xfcd34d, 0xff6b6b, 0x93c5fd, false) },
@@ -75,8 +75,44 @@ pub const ACCENTS: [u32; 8] = [0x5b8cff, 0x8b7bff, 0x2dd4bf, 0x3ddc84, 0xffd60a,
 
 static CURRENT: RwLock<Pal> = RwLock::new(PRESETS[0].pal);
 
+thread_local! {
+    /// Opacity applied to everything built inside [`faded`]: cards fade in by building their
+    /// widgets under it, since every style captures its colours when it is created.
+    static FADE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+}
+
 pub fn p() -> Pal {
-    CURRENT.read().map(|p| *p).unwrap_or(PRESETS[0].pal)
+    let pal = CURRENT.read().map(|p| *p).unwrap_or(PRESETS[0].pal);
+    let f = FADE.with(|c| c.get());
+    if f >= 1.0 {
+        return pal;
+    }
+    let a = |c: Color| Color { a: c.a * f, ..c };
+    Pal { bg: a(pal.bg), bg2: a(pal.bg2), surface: a(pal.surface), raised: a(pal.raised), text: a(pal.text), muted: a(pal.muted), faint: a(pal.faint), accent: a(pal.accent), working: a(pal.working), waiting: a(pal.waiting), danger: a(pal.danger), info: a(pal.info), light: pal.light }
+}
+
+/// The current fade, for colours that do not come from the palette (agent colours).
+pub fn fade() -> f32 {
+    FADE.with(|c| c.get())
+}
+
+/// Builds `f`'s widgets at opacity `a`.
+pub fn faded<T>(a: f32, f: impl FnOnce() -> T) -> T {
+    let prev = FADE.with(|c| c.replace(a.clamp(0.0, 1.0)));
+    let out = f();
+    FADE.with(|c| c.set(prev));
+    out
+}
+
+/// Ease-out for things arriving: fast start, soft landing.
+pub fn ease_out(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// Progress of an entrance that started `since` and lasts `dur` seconds, eased.
+pub fn entrance(since: std::time::Instant, dur: f32) -> f32 {
+    ease_out(since.elapsed().as_secs_f32() / dur)
 }
 
 pub fn parse_hex(s: &str) -> Option<Color> {
@@ -152,9 +188,12 @@ pub fn alpha(c: Color, a: f32) -> Color {
 }
 
 /// Text that reads on top of `c`: near-black on bright colours, white otherwise.
+/// The label colour for text on `c`: whichever of near-black and white contrasts more.
 pub fn on(c: Color) -> Color {
-    if luminance(c) > 0.42 {
-        hex(0x111114)
+    let l = luminance(c) + 0.05;
+    let dark = hex(0x111114);
+    if l / (luminance(dark) + 0.05) > 1.05 / l {
+        dark
     } else {
         Color::WHITE
     }
@@ -170,27 +209,26 @@ pub fn theme() -> Theme {
 }
 
 fn shadow(strength: f32) -> Shadow {
-    Shadow { color: alpha(Color::BLACK, if p().light { 0.12 * strength } else { 0.4 * strength }), offset: Vector::new(0.0, 6.0 * strength), blur_radius: 24.0 * strength }
+    let f = fade();
+    Shadow { color: alpha(Color::BLACK, f * if p().light { 0.12 * strength } else { 0.4 * strength }), offset: Vector::new(0.0, 6.0 * strength), blur_radius: 24.0 * strength }
 }
 
 /// A floating bar or panel.
 pub fn surface(radius: f32) -> impl Fn(&Theme) -> container::Style {
-    move |_| {
-        let p = p();
-        container::Style { background: Some(Background::Color(p.surface)), border: border::rounded(radius), shadow: shadow(0.6), text_color: Some(p.text), ..Default::default() }
-    }
+    let (p, sh) = (p(), shadow(0.6));
+    move |_| container::Style { background: Some(Background::Color(p.surface)), border: border::rounded(radius), shadow: sh, text_color: Some(p.text), ..Default::default() }
 }
 
 /// A card that hangs over the office: the same surface with a deeper shadow.
-pub fn card(_: &Theme) -> container::Style {
-    let p = p();
-    container::Style { background: Some(Background::Color(p.surface)), border: border::rounded(16), shadow: shadow(1.2), text_color: Some(p.text), ..Default::default() }
+pub fn card() -> impl Fn(&Theme) -> container::Style {
+    let (p, sh) = (p(), shadow(1.2));
+    move |_| container::Style { background: Some(Background::Color(p.surface)), border: border::rounded(16), shadow: sh, text_color: Some(p.text), ..Default::default() }
 }
 
 /// A quiet inset block inside a surface.
-pub fn inset(_: &Theme) -> container::Style {
+pub fn inset() -> impl Fn(&Theme) -> container::Style {
     let p = p();
-    container::Style { background: Some(Background::Color(p.raised)), border: border::rounded(10), ..Default::default() }
+    move |_| container::Style { background: Some(Background::Color(p.raised)), border: border::rounded(10), ..Default::default() }
 }
 
 pub fn fill(c: Color, radius: f32) -> impl Fn(&Theme) -> container::Style {
@@ -202,11 +240,8 @@ pub fn dot(c: Color) -> impl Fn(&Theme) -> container::Style {
 }
 
 pub fn ring(c: Color, selected: bool) -> impl Fn(&Theme) -> container::Style {
-    move |_| container::Style {
-        background: Some(Background::Color(c)),
-        border: Border { color: if selected { p().text } else { Color::TRANSPARENT }, width: 2.0, radius: 999.0.into() },
-        ..Default::default()
-    }
+    let edge = if selected { p().text } else { Color::TRANSPARENT };
+    move |_| container::Style { background: Some(Background::Color(c)), border: Border { color: edge, width: 2.0, radius: 999.0.into() }, ..Default::default() }
 }
 
 pub fn tinted(c: Color) -> impl Fn(&Theme) -> container::Style {
@@ -219,8 +254,8 @@ fn hot(status: button::Status) -> bool {
 
 /// Buttons inside a surface: flat until hovered, `raised` when on.
 pub fn flat(on: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    let p = p();
     move |_, status| {
-        let p = p();
         let bg = if on {
             p.raised
         } else if hot(status) {
@@ -233,23 +268,27 @@ pub fn flat(on: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
 }
 
 /// The one strong button in a group.
-pub fn primary(_: &Theme, status: button::Status) -> button::Style {
+pub fn primary() -> impl Fn(&Theme, button::Status) -> button::Style {
     let p = p();
-    let bg = if hot(status) { mix(p.accent, on(p.accent), 0.1) } else { p.accent };
-    button::Style { background: Some(Background::Color(bg)), text_color: on(p.accent), border: border::rounded(9), ..Default::default() }
+    move |_, status| {
+        let bg = if hot(status) { mix(p.accent, on(p.accent), 0.1) } else { p.accent };
+        button::Style { background: Some(Background::Color(bg)), text_color: on(p.accent), border: border::rounded(9), ..Default::default() }
+    }
 }
 
 /// Secondary actions: a filled chip in the raised colour.
-pub fn secondary(_: &Theme, status: button::Status) -> button::Style {
+pub fn secondary() -> impl Fn(&Theme, button::Status) -> button::Style {
     let p = p();
-    let bg = if hot(status) { mix(p.raised, p.text, 0.08) } else { p.raised };
-    button::Style { background: Some(Background::Color(bg)), text_color: p.text, border: border::rounded(9), ..Default::default() }
+    move |_, status| {
+        let bg = if hot(status) { mix(p.raised, p.text, 0.08) } else { p.raised };
+        button::Style { background: Some(Background::Color(bg)), text_color: p.text, border: border::rounded(9), ..Default::default() }
+    }
 }
 
 /// Window controls; close turns red on hover like every desktop expects.
 pub fn window_button(close: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    let p = p();
     move |_, status| {
-        let p = p();
         let bg = match (hot(status), close) {
             (true, true) => hex(0xe5484d),
             (true, false) => p.raised,
@@ -261,8 +300,8 @@ pub fn window_button(close: bool) -> impl Fn(&Theme, button::Status) -> button::
 
 /// A preset card in Settings; the chosen one gets an accent outline.
 pub fn preset_card(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    let p = p();
     move |_, status| {
-        let p = p();
         button::Style {
             background: Some(Background::Color(if hot(status) && !selected { p.raised } else { Color::TRANSPARENT })),
             text_color: p.text,
@@ -284,7 +323,7 @@ pub fn hidden_scroll(_: &Theme, _: scrollable::Status) -> scrollable::Style {
 }
 
 pub fn thin_scroll(_: &Theme, status: scrollable::Status) -> scrollable::Style {
-    let p = p();
+    let p = CURRENT.read().map(|p| *p).unwrap_or(PRESETS[0].pal);
     let active = !matches!(status, scrollable::Status::Active { .. });
     let rail = scrollable::Rail { background: None, border: Border::default(), scroller: scrollable::Scroller { background: Background::Color(alpha(p.muted, if active { 0.45 } else { 0.2 })), border: border::rounded(4) } };
     scrollable::Style {
@@ -297,7 +336,7 @@ pub fn thin_scroll(_: &Theme, status: scrollable::Status) -> scrollable::Style {
 }
 
 pub fn toggle(_: &Theme, status: toggler::Status) -> toggler::Style {
-    let p = p();
+    let p = CURRENT.read().map(|p| *p).unwrap_or(PRESETS[0].pal);
     let on_ = matches!(status, toggler::Status::Active { is_toggled: true } | toggler::Status::Hovered { is_toggled: true });
     toggler::Style {
         background: Background::Color(if on_ { p.accent } else { p.faint }),

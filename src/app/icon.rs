@@ -19,6 +19,9 @@ pub enum Icon {
     Right,
     Shuffle,
     Feed,
+    TurnLeft,
+    TurnRight,
+    Reset,
     Chevron(bool),
 }
 
@@ -82,6 +85,36 @@ impl canvas::Program<Message> for Draw {
                     line(&mut f, p(0.36, y), p(0.36 + *w * 0.75, y));
                 }
             }
+            Icon::TurnLeft | Icon::TurnRight | Icon::Reset => {
+                // an arc with an arrow head; reset is a full circle around a dot
+                let dir = if self.icon == Icon::TurnRight { -1.0 } else { 1.0 };
+                let (c, r) = (p(0.5, 0.52), s * 0.27);
+                let (a0, a1) = if self.icon == Icon::Reset { (0.6f32, 5.6f32) } else { (0.9f32, 4.6f32) };
+                let arc = Path::new(|b| {
+                    let n = 24;
+                    for i in 0..=n {
+                        let a = a0 + (a1 - a0) * i as f32 / n as f32;
+                        let q = Point::new(c.x + dir * r * a.cos(), c.y - r * a.sin());
+                        if i == 0 {
+                            b.move_to(q)
+                        } else {
+                            b.line_to(q)
+                        }
+                    }
+                });
+                f.stroke(&arc, stroke);
+                let tip = Point::new(c.x + dir * r * a1.cos(), c.y - r * a1.sin());
+                let tangent = (-dir * a1.sin(), -a1.cos());
+                let n = (tangent.1, -tangent.0);
+                let h = s * 0.13;
+                for side in [1.0, -1.0] {
+                    let q = Point::new(tip.x - tangent.0 * h + n.0 * h * side * dir, tip.y - tangent.1 * h + n.1 * h * side * dir);
+                    line(&mut f, tip, q);
+                }
+                if self.icon == Icon::Reset {
+                    f.fill(&Path::circle(c, s * 0.06), self.color);
+                }
+            }
             Icon::Chevron(open) => {
                 if open {
                     line(&mut f, p(0.28, 0.4), p(0.5, 0.62));
@@ -110,31 +143,9 @@ pub fn icon<'a>(icon: Icon, size: f32, color: Color) -> Element<'a, Message> {
     canvas::Canvas::new(Draw { icon, color }).width(size).height(size).into()
 }
 
-/// The window icon: a tiny isometric floor tile with a desk lamp glow.
+/// The window icon, from the same artwork as the app bundles.
 pub fn app_icon() -> Option<iced::window::Icon> {
-    const N: u32 = 64;
-    let mut px = vec![0u8; (N * N * 4) as usize];
-    for y in 0..N {
-        for x in 0..N {
-            let (u, v) = (x as f32 + 0.5 - 32.0, y as f32 + 0.5 - 32.0);
-            // rounded square background
-            let q = (u.abs() - 26.0).max(0.0).hypot((v.abs() - 26.0).max(0.0));
-            if q > 4.0 {
-                continue;
-            }
-            let mut c = [0x1c, 0x24, 0x33, 255];
-            // the diamond floor
-            let d = u.abs() / 22.0 + (v - 6.0).abs() / 11.0;
-            if d <= 1.0 {
-                c = if u < 0.0 { [0x4f, 0xb3, 0xa6, 255] } else { [0x3d, 0x93, 0x88, 255] };
-            }
-            // a back wall
-            if v < 6.0 - u.abs() / 2.0 && v > -14.0 - u.abs() / 2.0 && u.abs() < 22.0 {
-                c = if u < 0.0 { [0xf2, 0xe8, 0xd5, 255] } else { [0xe0, 0x7a, 0x3f, 255] };
-            }
-            let k = ((y * N + x) * 4) as usize;
-            px[k..k + 4].copy_from_slice(&c);
-        }
-    }
-    iced::window::icon::from_rgba(px, N, N).ok()
+    let img = image::load_from_memory_with_format(include_bytes!("../../assets/brand/icon-256.png"), image::ImageFormat::Png).ok()?.to_rgba8();
+    let (w, h) = img.dimensions();
+    iced::window::icon::from_rgba(img.into_raw(), w, h).ok()
 }

@@ -2,12 +2,11 @@
 //! windows and door, and the whiteboard. Mirrors `buildStatic` and `drawBoard` in the prototype.
 
 use super::assets::{decode, meta, premultiply, FONT_HAND};
-use super::Bounds;
 use crate::office::gen::{Flat, Layout};
 use crate::office::{iso, Rng, TH, TW, WH};
 use image::RgbaImage;
 use std::sync::OnceLock;
-use tiny_skia::{Color, FillRule, FilterQuality, GradientStop, LinearGradient, Paint, PathBuilder, Pattern, Pixmap, Point, Rect, SpreadMode, Stroke, Transform};
+use tiny_skia::{Color, FilterQuality, GradientStop, LinearGradient, Paint, PathBuilder, Pattern, Pixmap, Point, Rect, SpreadMode, Stroke, Transform};
 
 fn rgb(c: u32) -> Color {
     Color::from_rgba8((c >> 16) as u8, (c >> 8) as u8, c as u8, 255)
@@ -57,20 +56,6 @@ fn floor_texture(name: &str) -> Pixmap {
     pixmap_of(out)
 }
 
-fn poly(pm: &mut Pixmap, pts: &[(f32, f32)], paint: &Paint, t: Transform) {
-    let mut pb = PathBuilder::new();
-    for (i, &(x, y)) in pts.iter().enumerate() {
-        if i == 0 {
-            pb.move_to(x, y)
-        } else {
-            pb.line_to(x, y)
-        }
-    }
-    pb.close();
-    if let Some(path) = pb.finish() {
-        pm.fill_path(&path, paint, FillRule::Winding, t, None);
-    }
-}
 
 fn rect(pm: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, paint: &Paint, t: Transform) {
     if let Some(r) = Rect::from_xywh(x, y, w, h) {
@@ -78,134 +63,146 @@ fn rect(pm: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, paint: &Paint, t: Trans
     }
 }
 
-fn wall(back: bool, start: f32) -> Transform {
-    if back {
-        let (x, y) = iso(start, 0.0);
-        Transform::from_row(1.0, 0.5, 0.0, 1.0, x, y)
-    } else {
-        let (x, y) = iso(0.0, start);
-        Transform::from_row(1.0, -0.5, 0.0, 1.0, x, y)
-    }
+
+/// Floor pixels per tile, and wall pixels per wall-space px.
+pub const FLOOR_RES: f32 = 128.0;
+pub const WALL_RES: f32 = 2.0;
+/// Fraction of the wall height a cut-away wall keeps.
+pub const CUTAWAY: f32 = 0.16;
+
+/// Everything about a room that never moves, each painted flat in its own space.
+pub struct Statics {
+    pub floor: RgbaImage,
+    /// back, left, front, right
+    pub walls: [RgbaImage; 4],
 }
 
-/// Pixels per world px for the static layer: sharp at the current zoom, within a memory budget.
-pub fn static_resolution(b: Bounds, scale_px: f32) -> f32 {
-    const BUDGET: f32 = 12e6;
-    scale_px.min((BUDGET / (b.width() * b.height())).sqrt()).max(0.5)
+pub fn statics(o: &Layout) -> Statics {
+    Statics { floor: floor(o), walls: [wall(o, 0), wall(o, 1), wall(o, 2), wall(o, 3)] }
 }
 
-/// Floor, walls, windows, door and rugs, at `res` pixels per world px.
-pub fn static_layer(o: &Layout, res: f32) -> RgbaImage {
-    let b = Bounds::of(o);
-    let (w, h) = ((b.width() * res).ceil() as u32, (b.height() * res).ceil() as u32);
-    let mut pm = Pixmap::new(w.max(1), h.max(1)).unwrap();
-    let base = Transform::from_row(res, 0.0, 0.0, res, -b.min_x * res, -b.min_y * res);
+fn into_image(pm: Pixmap) -> RgbaImage {
+    let (w, h) = (pm.width(), pm.height());
+    RgbaImage::from_raw(w, h, pm.take()).unwrap()
+}
+
+/// The floor seen from straight above, one square per tile.
+pub fn floor(o: &Layout) -> RgbaImage {
+    let t = FLOOR_RES;
+    let mut pm = Pixmap::new((o.w as f32 * t) as u32, (o.h as f32 * t) as u32).unwrap();
+    let base = Transform::from_scale(t, t);
     let th = o.theme;
-    let up = |(x, y): (f32, f32), d: f32| (x, y - d);
-    let (a, bb, c, m) = (iso(0.0, 0.0), iso(o.w as f32, 0.0), iso(0.0, o.h as f32), iso(o.px as f32, 0.0));
-    poly(&mut pm, &[a, m, up(m, WH), up(a, WH)], &solid(rgb(th.back)), base);
-    poly(&mut pm, &[m, bb, up(bb, WH), up(m, WH)], &solid(rgb(th.accent)), base);
-    poly(&mut pm, &[a, c, up(c, WH), up(a, WH)], &solid(rgb(th.left)), base);
-    if let Some(g) = LinearGradient::new(Point::from_xy(c.0, 0.0), Point::from_xy(a.0, 0.0), vec![GradientStop::new(0.0, rgba(0, 0, 0, 0.16)), GradientStop::new(1.0, rgba(0, 0, 0, 0.02))], SpreadMode::Pad, Transform::identity()) {
-        let mut p = Paint::default();
-        p.shader = g;
-        poly(&mut pm, &[a, c, up(c, WH), up(a, WH)], &p, base);
-    }
-    let trim = solid(rgb(th.trim));
-    poly(&mut pm, &[a, bb, up(bb, 7.0), up(a, 7.0)], &trim, base);
-    poly(&mut pm, &[a, c, up(c, 7.0), up(a, 7.0)], &trim, base);
-    {
-        let mut pb = PathBuilder::new();
-        let (p0, p1, p2) = (up(c, WH), up(a, WH), up(bb, WH));
-        pb.move_to(p0.0, p0.1);
-        pb.line_to(p1.0, p1.1);
-        pb.line_to(p2.0, p2.1);
-        if let Some(path) = pb.finish() {
-            pm.stroke_path(&path, &solid(rgba(255, 255, 255, 0.18)), &Stroke { width: 3.0, ..Stroke::default() }, base, None);
-        }
-    }
-    // windows on the left wall: a dusk sky over a little skyline
-    for &wy in &o.windows {
-        let t = base.pre_concat(wall(false, wy + 1.8));
-        let ww = 1.6 * TW / 2.0;
-        rect(&mut pm, -3.0, -103.0, ww + 6.0, 76.0, &trim, t);
-        if let Some(g) = LinearGradient::new(
-            Point::from_xy(0.0, -100.0),
-            Point::from_xy(0.0, -30.0),
-            vec![GradientStop::new(0.0, rgb(0x1d2a4a)), GradientStop::new(0.7, rgb(0x6b5a8a)), GradientStop::new(1.0, rgb(0xe58b5a))],
-            SpreadMode::Pad,
-            Transform::identity(),
-        ) {
-            let mut p = Paint::default();
-            p.shader = g;
-            rect(&mut pm, 0.0, -100.0, ww, 70.0, &p, t);
-        }
-        let k0 = wy.round() as usize;
-        for k in 0..6 {
-            let bh = 10.0 + o.sky[(k + k0) % 24] * 26.0;
-            rect(&mut pm, k as f32 * ww / 6.0, -30.0 - bh, ww / 6.0 - 1.0, bh, &solid(rgb(0x141b2c)), t);
-        }
-        for k in 0..10 {
-            let v = o.sky[(k * 3 + k0) % 24];
-            rect(&mut pm, 4.0 + v * (ww - 8.0), -36.0 - o.sky[(k + 7) % 24] * 14.0, 1.6, 1.6, &solid(rgba(255, 214, 140, 0.85)), t);
-        }
-        rect(&mut pm, ww / 2.0 - 1.0, -100.0, 2.0, 70.0, &trim, t);
-        rect(&mut pm, 0.0, -66.0, ww, 2.0, &trim, t);
-    }
-    // the door
-    {
-        let t = base.pre_concat(wall(false, o.door.y as f32 + 1.0));
-        rect(&mut pm, 4.0, -70.0, 26.0, 70.0, &trim, t);
-        rect(&mut pm, 8.0, -66.0, 18.0, 66.0, &solid(rgba(0, 0, 0, 0.25)), t);
-        rect(&mut pm, 23.0, -36.0, 3.0, 3.0, &solid(rgb(0xe8c27a)), t);
-    }
-    // the floor is one flat plane: each tile's square texture is projected with the iso matrix,
-    // so neighbours meet edge to edge with no bevels, rims or slab thickness
-    let isom = base.pre_concat(Transform::from_row(TW / 2.0, TH / 2.0, -TW / 2.0, TH / 2.0, 0.0, 0.0));
     let (work, lounge) = (floor_texture(th.work), floor_texture(th.lounge));
     let mut fr = Rng::new(o.seed ^ 0x51ed);
     for y in 0..o.h {
         for x in 0..o.w {
             let tex = if x > o.px { &lounge } else { &work };
-            let (fx, fy) = (x as f32 - 0.004, y as f32 - 0.004);
-            let s = 1.008 / tex.width() as f32;
+            let s = 1.0 / tex.width() as f32;
             let mut p = Paint::default();
-            p.shader = Pattern::new(tex.as_ref(), SpreadMode::Pad, FilterQuality::Bilinear, 1.0, Transform::from_row(s, 0.0, 0.0, s, fx, fy));
-            // tiles overlap a hair, so hard edges leave no seams where antialiased ones would
+            p.shader = Pattern::new(tex.as_ref(), SpreadMode::Pad, FilterQuality::Bilinear, 1.0, Transform::from_row(s, 0.0, 0.0, s, x as f32, y as f32));
             p.anti_alias = false;
-            rect(&mut pm, fx, fy, 1.008, 1.008, &p, isom);
+            rect(&mut pm, x as f32, y as f32, 1.0, 1.0, &p, base);
             let j = fr.next();
             if j < 0.35 {
                 let c = if j < 0.17 { rgba(255, 255, 255, 0.035) } else { rgba(0, 0, 0, 0.045) };
                 let mut p = solid(c);
                 p.anti_alias = false;
-                rect(&mut pm, x as f32, y as f32, 1.0, 1.0, &p, isom);
+                rect(&mut pm, x as f32, y as f32, 1.0, 1.0, &p, base);
             }
         }
     }
     // grout: hairlines between tiles, a touch darker than the floor
-    {
-        let mut pb = PathBuilder::new();
-        for x in 1..o.w {
-            pb.move_to(x as f32, 0.0);
-            pb.line_to(x as f32, o.h as f32);
-        }
-        for y in 1..o.h {
-            pb.move_to(0.0, y as f32);
-            pb.line_to(o.w as f32, y as f32);
-        }
-        if let Some(path) = pb.finish() {
-            pm.stroke_path(&path, &solid(rgba(0, 0, 0, 0.16)), &Stroke { width: 1.0 / TH, ..Stroke::default() }, isom, None);
-        }
+    let mut pb = PathBuilder::new();
+    for x in 1..o.w {
+        pb.move_to(x as f32, 0.0);
+        pb.line_to(x as f32, o.h as f32);
     }
+    for y in 1..o.h {
+        pb.move_to(0.0, y as f32);
+        pb.line_to(o.w as f32, y as f32);
+    }
+    if let Some(path) = pb.finish() {
+        pm.stroke_path(&path, &solid(rgba(0, 0, 0, 0.16)), &Stroke { width: 1.0 / 40.0, ..Stroke::default() }, base, None);
+    }
+    // rugs are drawn isometric in the atlas; the inverse projection lays them flat
+    let unproject = base.pre_concat(Transform::from_row(1.0 / TW, -1.0 / TW, 1.0 / TH, 1.0 / TH, 0.0, 0.0));
     for f in &o.flats {
-        flat(&mut pm, f, base);
+        flat(&mut pm, f, unproject);
     }
-    let (w, h) = (pm.width(), pm.height());
-    RgbaImage::from_raw(w, h, pm.take()).unwrap()
+    into_image(pm)
 }
 
-fn flat(pm: &mut Pixmap, f: &Flat, base: Transform) {
+/// One wall in the prototype's wall space: 32 px per tile along it, screen px up from the floor.
+/// 0 back (y = 0, windows-free, holds the board), 1 left (x = 0, windows and door), 2 front, 3 right.
+pub fn wall(o: &Layout, which: usize) -> RgbaImage {
+    let r = WALL_RES;
+    let len = if which % 2 == 0 { o.w } else { o.h } as f32 * TW / 2.0;
+    let mut pm = Pixmap::new((len * r).ceil() as u32, (WH * r).ceil() as u32).unwrap();
+    let th = o.theme;
+    // texture px = r * (along, WH + up), with `up` negative above the floor like the prototype
+    let base = Transform::from_row(r, 0.0, 0.0, r, 0.0, WH * r);
+    let trim = solid(rgb(th.trim));
+    match which {
+        0 => {
+            let split = o.px as f32 * TW / 2.0;
+            rect(&mut pm, 0.0, -WH, split, WH, &solid(rgb(th.back)), base);
+            rect(&mut pm, split, -WH, len - split, WH, &solid(rgb(th.accent)), base);
+        }
+        1 => {
+            rect(&mut pm, 0.0, -WH, len, WH, &solid(rgb(th.left)), base);
+            // darker toward the front corner, as if lit from the windows' far end
+            if let Some(g) = LinearGradient::new(Point::from_xy(len, 0.0), Point::from_xy(0.0, 0.0), vec![GradientStop::new(0.0, rgba(0, 0, 0, 0.16)), GradientStop::new(1.0, rgba(0, 0, 0, 0.02))], SpreadMode::Pad, Transform::identity()) {
+                let mut p = Paint::default();
+                p.shader = g;
+                rect(&mut pm, 0.0, -WH, len, WH, &p, base);
+            }
+        }
+        2 => rect(&mut pm, 0.0, -WH, len, WH, &solid(rgb(th.left)), base),
+        _ => rect(&mut pm, 0.0, -WH, len, WH, &solid(rgb(th.accent)), base),
+    }
+    rect(&mut pm, 0.0, -7.0, len, 7.0, &trim, base);
+    rect(&mut pm, 0.0, -WH, len, 3.0, &solid(rgba(255, 255, 255, 0.18)), base);
+    if which == 1 {
+        // the left wall runs toward -y in the prototype's space, so its drawings mirror into ours
+        let at = |start: f32| base.pre_concat(Transform::from_row(-1.0, 0.0, 0.0, 1.0, start * TW / 2.0, 0.0));
+        for &wy in &o.windows {
+            let t = at(wy + 1.8);
+            let ww = 1.6 * TW / 2.0;
+            rect(&mut pm, -3.0, -103.0, ww + 6.0, 76.0, &trim, t);
+            if let Some(g) = LinearGradient::new(
+                Point::from_xy(0.0, -100.0),
+                Point::from_xy(0.0, -30.0),
+                vec![GradientStop::new(0.0, rgb(0x1d2a4a)), GradientStop::new(0.7, rgb(0x6b5a8a)), GradientStop::new(1.0, rgb(0xe58b5a))],
+                SpreadMode::Pad,
+                Transform::identity(),
+            ) {
+                let mut p = Paint::default();
+                p.shader = g;
+                rect(&mut pm, 0.0, -100.0, ww, 70.0, &p, t);
+            }
+            let k0 = wy.round() as usize;
+            for k in 0..6 {
+                let bh = 10.0 + o.sky[(k + k0) % 24] * 26.0;
+                rect(&mut pm, k as f32 * ww / 6.0, -30.0 - bh, ww / 6.0 - 1.0, bh, &solid(rgb(0x141b2c)), t);
+            }
+            for k in 0..10 {
+                let v = o.sky[(k * 3 + k0) % 24];
+                rect(&mut pm, 4.0 + v * (ww - 8.0), -36.0 - o.sky[(k + 7) % 24] * 14.0, 1.6, 1.6, &solid(rgba(255, 214, 140, 0.85)), t);
+            }
+            rect(&mut pm, ww / 2.0 - 1.0, -100.0, 2.0, 70.0, &trim, t);
+            rect(&mut pm, 0.0, -66.0, ww, 2.0, &trim, t);
+        }
+        let t = at(o.door.y as f32 + 1.0);
+        rect(&mut pm, 4.0, -70.0, 26.0, 70.0, &trim, t);
+        rect(&mut pm, 8.0, -66.0, 18.0, 66.0, &solid(rgba(0, 0, 0, 0.25)), t);
+        rect(&mut pm, 8.0, -36.0, 3.0, 3.0, &solid(rgb(0xe8c27a)), t);
+    }
+    into_image(pm)
+}
+
+/// A rug from the props atlas, placed where the prototype draws it in screen space; `t` maps
+/// screen space into the target.
+fn flat(pm: &mut Pixmap, f: &Flat, t: Transform) {
     let Some(&(_, r)) = meta().items.get(f.name) else { return };
     let s = 124.0 / r[2] as f32;
     let cx = (iso(f.x, f.y + f.fy).0 + iso(f.x + f.fx, f.y).0) / 2.0;
@@ -215,7 +212,7 @@ fn flat(pm: &mut Pixmap, f: &Flat, base: Transform) {
     let mut p = Paint::default();
     // the pattern maps atlas pixels onto the destination rect
     p.shader = Pattern::new(props_atlas().as_ref(), SpreadMode::Pad, FilterQuality::Bicubic, 0.95, Transform::from_row(s, 0.0, 0.0, s, x - r[0] as f32 * s, y - r[1] as f32 * s));
-    rect(pm, x, y, w, h, &p, base);
+    rect(pm, x, y, w, h, &p, t);
 }
 
 /// What the whiteboard shows.
@@ -340,20 +337,17 @@ mod tests {
     #[test]
     fn paints_a_floor_and_a_board() {
         let o = generate(3);
-        let img = static_layer(&o, 1.0);
-        let b = Bounds::of(&o);
+        let st = statics(&o);
+        assert_eq!(st.floor.dimensions(), ((o.w as f32 * FLOOR_RES) as u32, (o.h as f32 * FLOOR_RES) as u32));
+        assert!(st.floor.pixels().all(|p| p[3] == 255), "the floor is opaque edge to edge");
         if let Ok(d) = std::env::var("SHIPOFFICE_DUMP") {
-            img.save(format!("{d}/static.png")).unwrap();
+            st.floor.save(format!("{d}/floor.png")).unwrap();
+            st.walls[1].save(format!("{d}/wall_left.png")).unwrap();
         }
-        // the middle of the floor is opaque, the corner above the walls is empty
-        let (cx, cy) = iso(o.w as f32 / 2.0, o.h as f32 / 2.0);
-        assert_eq!(img.get_pixel((cx - b.min_x) as u32, (cy - b.min_y) as u32)[3], 255);
-        assert_eq!(img.get_pixel(0, 0)[3], 0);
         let st = BoardStats { elapsed: 75, working: true, waiting: 0, tok_in: 12000, tok_out: 3000, cache: 0.8, files: 4, ctx: 0.3, tools: [3, 2, 1, 1, 0] };
         let bd = board(190.0, &st);
         if let Ok(d) = std::env::var("SHIPOFFICE_DUMP") {
             bd.save(format!("{d}/board.png")).unwrap();
-            img.save(format!("{d}/static.png")).unwrap();
         }
         let dark = bd.pixels().filter(|p| p[2] > 100 && p[0] < 90).count();
         assert!(dark > 50, "handwriting was drawn");

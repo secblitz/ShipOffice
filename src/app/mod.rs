@@ -15,6 +15,7 @@ use crate::office::world::{SeatRef, World};
 use crate::office::{hash, TW};
 use crate::render::paint::{self, BoardStats};
 use crate::render::scene::{self, Hit, Scene};
+use crate::render::view::{self, View};
 use crate::render::{assets, gpu, Bounds, Camera, Layer};
 use crate::session::{Session, Status};
 use crate::sources::{self, Update};
@@ -40,6 +41,11 @@ pub enum Message {
     Hover(Option<Hit>),
     Click(Option<Hit>),
     Pan(Vector),
+    /// drag to turn (x) and tilt (y) the view
+    Orbit(Vector),
+    /// turn by this many radians, eased
+    Turn(f32),
+    ResetView,
     ZoomAt(Point, f32),
     Zoom(f32),
     Fit,
@@ -114,8 +120,8 @@ pub struct Tab {
     pub world: World,
     uid: u64,
     pub seed: u32,
-    static_layer: Option<Layer>,
-    static_res: f32,
+    /// floor and the four walls, painted off the UI thread
+    statics: Option<[Layer; 5]>,
     building: bool,
     board: Option<Layer>,
     board_stats: Option<BoardStats>,
@@ -147,8 +153,20 @@ pub struct App {
     zoomed_at: Instant,
     pub fps: f32,
     started: Instant,
-    jobs_tx: Sender<(u64, f32, image::RgbaImage)>,
-    jobs_rx: Receiver<(u64, f32, image::RgbaImage)>,
+    jobs_tx: Sender<(u64, paint::Statics)>,
+    jobs_rx: Receiver<(u64, paint::Statics)>,
+    /// the orbit: where the view is and where it is easing to
+    pub yaw: f32,
+    pub pitch: f32,
+    yaw_to: f32,
+    pitch_to: f32,
+    /// eased zoom: target zoom and the stage point it zooms around
+    zoom_to: Option<(f32, Point)>,
+    /// eased return to the fitted view
+    fitting: bool,
+    /// when each card or panel opened, for its entrance
+    pub opened: HashMap<&'static str, Instant>,
+    pub tab_since: Instant,
     next_uid: u64,
     shot_taken: bool,
 }
@@ -216,9 +234,25 @@ impl App {
             started: Instant::now(),
             jobs_tx,
             jobs_rx,
+            yaw: view::DEFAULT_YAW,
+            pitch: view::DEFAULT_PITCH,
+            yaw_to: view::DEFAULT_YAW,
+            pitch_to: view::DEFAULT_PITCH,
+            zoom_to: None,
+            fitting: false,
+            opened: HashMap::new(),
+            tab_since: Instant::now(),
             next_uid: 1,
             shot_taken: false,
         };
+        let mut app = app;
+        // debug: SHIPOFFICE_VIEW="yaw,pitch" in degrees starts at another angle
+        if let Some((y, p)) = std::env::var("SHIPOFFICE_VIEW").ok().and_then(|v| v.split_once(',').and_then(|(a, b)| Some((a.trim().parse::<f32>().ok()?, b.trim().parse::<f32>().ok()?)))) {
+            app.yaw = y.to_radians();
+            app.yaw_to = app.yaw;
+            app.pitch = p.to_radians().clamp(view::MIN_PITCH, view::MAX_PITCH);
+            app.pitch_to = app.pitch;
+        }
         (app, window::latest().and_then(window::scale_factor).map(Message::ScaleFactor))
     }
 
@@ -269,6 +303,7 @@ impl App {
                     self.hover = None;
                     self.board_open = false;
                     self.follow = false;
+                    self.tab_since = Instant::now();
                     self.relayout(true);
                 }
             }
@@ -280,18 +315,34 @@ impl App {
                 self.zoomed_at = Instant::now();
             }
             Message::ZoomAt(p, f) => {
-                self.cam.zoom_at(p.x, p.y, f);
-                self.zoomed_at = Instant::now();
+                let z = self.zoom_to.map_or(self.cam.z, |(z, _)| z);
+                self.zoom_to = Some(((z * f).clamp(1.0, crate::render::MAX_ZOOM), p));
+                self.fitting = false;
             }
-            Message::Zoom(f) => {
-                self.cam.zoom_at(self.stage.width / 2.0, self.stage.height / 2.0, f);
-                self.zoomed_at = Instant::now();
-            }
+            Message::Zoom(f) => return self.update(Message::ZoomAt(Point::new(self.stage.width / 2.0, self.stage.height / 2.0), f)),
             Message::Fit => {
                 self.follow = false;
-                self.relayout(true);
+                self.zoom_to = None;
+                self.fitting = true;
+            }
+            Message::Orbit(d) => {
+                self.yaw_to -= d.x * 0.008;
+                self.pitch_to = (self.pitch_to + d.y * 0.006).clamp(view::MIN_PITCH, view::MAX_PITCH);
+                self.yaw = self.yaw_to;
+                self.pitch = self.pitch_to;
+            }
+            Message::Turn(a) => self.yaw_to += a,
+            Message::ResetView => {
+                // the shortest way back to the classic angle
+                let tau = std::f32::consts::TAU;
+                let d = (self.yaw - view::DEFAULT_YAW).rem_euclid(tau);
+                self.yaw = view::DEFAULT_YAW + if d > std::f32::consts::PI { d - tau } else { d };
+                self.yaw_to = view::DEFAULT_YAW;
+                self.pitch_to = view::DEFAULT_PITCH;
+                self.fitting = true;
             }
             Message::Select(id) => {
+                self.mark("inspector", id.is_some() && id != self.selected);
                 self.selected = id;
                 self.board_open = false;
                 if id.is_none() {
@@ -306,13 +357,23 @@ impl App {
                 self.follow = false;
             }
             Message::ToggleFeed => {
-                if let Ok(mut c) = self.cfg.write() {
+                let open = if let Ok(mut c) = self.cfg.write() {
                     c.feed_open = !c.feed_open;
                     let _ = c.save();
-                }
+                    c.feed_open
+                } else {
+                    false
+                };
+                self.mark("feed", open);
             }
-            Message::ToggleCrew => self.crew_open = !self.crew_open,
-            Message::ToggleSettings => self.settings_open = !self.settings_open,
+            Message::ToggleCrew => {
+                self.crew_open = !self.crew_open;
+                self.mark("crew", self.crew_open);
+            }
+            Message::ToggleSettings => {
+                self.settings_open = !self.settings_open;
+                self.mark("settings", self.settings_open);
+            }
             Message::NewLayout => self.new_layout(),
             Message::Key(k) => return self.key(k),
             Message::Window(a) => {
@@ -361,6 +422,9 @@ impl App {
             keyboard::Key::Character("-") => return self.update(Message::Zoom(0.8)),
             keyboard::Key::Character("0") => return self.update(Message::Fit),
             keyboard::Key::Character("f") => return self.update(Message::Follow),
+            keyboard::Key::Character("q") => return self.update(Message::Turn(std::f32::consts::FRAC_PI_4)),
+            keyboard::Key::Character("e") => return self.update(Message::Turn(-std::f32::consts::FRAC_PI_4)),
+            keyboard::Key::Character("r") => return self.update(Message::ResetView),
             keyboard::Key::Character(c) => {
                 if let Some(n) = c.parse::<usize>().ok().filter(|n| (1..=9).contains(n)) {
                     return self.update(Message::SelectTab(n - 1));
@@ -379,6 +443,7 @@ impl App {
         }
         let i = self.selected.and_then(|s| ids.iter().position(|&x| x == s)).map_or(0, |i| (i as i32 + d).rem_euclid(ids.len() as i32) as usize);
         self.selected = Some(ids[i]);
+        self.mark("inspector", true);
         self.board_open = false;
     }
 
@@ -386,10 +451,12 @@ impl App {
         match hit {
             Some(Hit::Agent(id)) => {
                 self.selected = if self.selected == Some(id) { None } else { Some(id) };
+                self.mark("inspector", self.selected.is_some());
                 self.board_open = false;
             }
             Some(Hit::Board) => {
                 self.board_open = !self.board_open;
+                self.mark("board", self.board_open);
                 self.selected = None;
             }
             Some(Hit::Prop(i)) => {
@@ -403,6 +470,9 @@ impl App {
                     _ if matches!(p.name, "sofa" | "table" | "chairL" | "chairR") => w.avatars.iter().find(|a| matches!(a.seated, Some(SeatRef::Lounge(_)))).map(|a| a.id),
                     _ => None,
                 };
+                if user.is_some() && user != self.selected {
+                    self.mark("inspector", true);
+                }
                 self.selected = user;
                 self.board_open = false;
             }
@@ -478,7 +548,7 @@ impl App {
                 let uid = self.next_uid;
                 self.next_uid += 1;
                 let world = self.world_for(&s.project(), seed);
-                self.tabs.push(Tab { key: s.key.clone(), world, uid, seed, static_layer: None, static_res: 0.0, building: false, board: None, board_stats: None });
+                self.tabs.push(Tab { key: s.key.clone(), world, uid, seed, statics: None, building: false, board: None, board_stats: None });
             }
         }
         let before = self.active;
@@ -514,7 +584,7 @@ impl App {
         self.next_uid += 1;
         let world = self.world_for(&project, seed);
         if let Some(t) = self.tabs.get_mut(self.active) {
-            *t = Tab { key, world, uid, seed, static_layer: None, static_res: 0.0, building: false, board: None, board_stats: None };
+            *t = Tab { key, world, uid, seed, statics: None, building: false, board: None, board_stats: None };
         }
         self.selected = None;
         self.relayout(true);
@@ -570,34 +640,29 @@ impl App {
                 self.zoomed_at = now;
             }
         }
+        self.motion(dt);
         self.layers();
         self.build_scene();
     }
 
-    /// Keeps the active office's painted layers current: the floor at a resolution that stays
-    /// sharp at this zoom (repainted off the UI thread), and the whiteboard's numbers.
+    /// Keeps the active office's painted layers current: the floor and walls (painted off the
+    /// UI thread once per office) and the whiteboard's numbers.
     fn layers(&mut self) {
-        while let Ok((uid, res, img)) = self.jobs_rx.try_recv() {
+        while let Ok((uid, st)) = self.jobs_rx.try_recv() {
             if let Some(t) = self.tabs.iter_mut().find(|t| t.uid == uid) {
-                let version = t.static_layer.as_ref().map_or(1, |l| l.version + 1);
-                t.static_layer = Some(Layer { id: uid * 2, version, image: Arc::new(img) });
-                t.static_res = res;
+                let [w0, w1, w2, w3] = st.walls;
+                let mk = |k: u64, img: image::RgbaImage| Layer { id: uid * 8 + k, version: 1, image: Arc::new(img) };
+                t.statics = Some([mk(0, st.floor), mk(1, w0), mk(2, w1), mk(3, w2), mk(4, w3)]);
                 t.building = false;
             }
         }
-        let scale = self.cam.scale() * self.scale_factor;
-        let settled = self.zoomed_at.elapsed() > Duration::from_millis(160);
         let stats = self.session().map(board_stats);
         let Some(t) = self.tabs.get_mut(self.active) else { return };
-        let b = Bounds::of(&t.world.s.layout);
-        let want = paint::static_resolution(b, scale);
-        let stale = t.static_layer.is_none() || ((want - t.static_res).abs() / t.static_res.max(0.01) > 0.18 && settled);
-        if stale && !t.building {
+        if t.statics.is_none() && !t.building {
             t.building = true;
             let (layout, tx, uid): (Layout, _, _) = (t.world.s.layout.clone(), self.jobs_tx.clone(), t.uid);
             std::thread::spawn(move || {
-                let img = paint::static_layer(&layout, want);
-                let _ = tx.send((uid, want, img));
+                let _ = tx.send((uid, paint::statics(&layout)));
             });
         }
         if let Some(st) = stats {
@@ -606,9 +671,62 @@ impl App {
                 let span = (o.bx1 - o.bx0) as f32 * TW / 2.0;
                 let img = paint::board(span, &st);
                 let version = t.board.as_ref().map_or(1, |l| l.version + 1);
-                t.board = Some(Layer { id: t.uid * 2 + 1, version, image: Arc::new(img) });
+                t.board = Some(Layer { id: t.uid * 8 + 5, version, image: Arc::new(img) });
                 t.board_stats = Some(st);
             }
+        }
+    }
+
+    pub fn started_secs(&self) -> f32 {
+        self.started.elapsed().as_secs_f32()
+    }
+
+    pub fn view_of(&self, t: &Tab) -> View {
+        View::new(&t.world.s.layout, self.yaw, self.pitch)
+    }
+
+    /// The view has been turned or tilted away from the classic angle.
+    pub fn turned(&self) -> bool {
+        let d = (self.yaw_to - view::DEFAULT_YAW).rem_euclid(std::f32::consts::TAU);
+        d.min(std::f32::consts::TAU - d) > 0.01 || (self.pitch_to - view::DEFAULT_PITCH).abs() > 0.01
+    }
+
+    /// Eases the orbit, zoom and fit toward their targets, ease-out style.
+    fn motion(&mut self, dt: f32) {
+        let k = (dt * 9.0).min(1.0);
+        self.yaw += (self.yaw_to - self.yaw) * k;
+        self.pitch += (self.pitch_to - self.pitch) * k;
+        if let Some((z, at)) = self.zoom_to {
+            let f = (z / self.cam.z).powf((dt * 12.0).min(1.0));
+            self.cam.zoom_at(at.x, at.y, f);
+            if (z / self.cam.z - 1.0).abs() < 0.002 {
+                self.zoom_to = None;
+            }
+            self.zoomed_at = Instant::now();
+        }
+        if let Some(t) = self.tabs.get(self.active) {
+            let b = self.view_of(t).bounds(&t.world.s.layout);
+            self.cam.set_bounds(b, (dt * 8.0).min(1.0));
+        }
+        if self.fitting {
+            let k = (dt * 7.0).min(1.0);
+            self.cam.z += (1.0 - self.cam.z) * k;
+            self.cam.cx += (self.cam.home.0 - self.cam.cx) * k;
+            self.cam.cy += (self.cam.home.1 - self.cam.cy) * k;
+            self.cam.clamp();
+            if (self.cam.z - 1.0).abs() < 0.002 {
+                self.cam.z = 1.0;
+                self.fitting = false;
+            }
+        }
+    }
+
+    /// Marks a card or panel as just opened (for its entrance) or closed.
+    fn mark(&mut self, key: &'static str, open: bool) {
+        if open {
+            self.opened.insert(key, Instant::now());
+        } else {
+            self.opened.remove(key);
         }
     }
 
@@ -620,13 +738,21 @@ impl App {
         };
         self.scene = scene::build(&scene::Inputs {
             world: &t.world,
-            static_layer: t.static_layer.as_ref(),
+            view: &self.view_of(t),
+            statics: t.statics.as_ref(),
             board: t.board.as_ref(),
             hover: self.hover,
             selected: self.selected,
             anim_fps: cfg_fps,
             now: self.started.elapsed().as_secs_f32(),
         });
+        // a new office fades in
+        let fade = style::entrance(self.tab_since, 0.35);
+        if fade < 1.0 {
+            for (_, i) in &mut self.scene.list.items {
+                i.tint[3] = (i.tint[3] as f32 * fade) as u8;
+            }
+        }
     }
 
     fn setting(&mut self, s: Setting) {

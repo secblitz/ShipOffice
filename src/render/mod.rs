@@ -5,9 +5,9 @@ pub mod assets;
 pub mod gpu;
 pub mod paint;
 pub mod scene;
+pub mod view;
 
 use crate::office::gen::Layout;
-use crate::office::{iso, WH};
 use bytemuck::{Pod, Zeroable};
 use std::sync::Arc;
 
@@ -95,6 +95,9 @@ pub struct Camera {
     /// stage size in logical px
     pub w: f32,
     pub h: f32,
+    /// how far the HUD pushes the room's centre up, in world px at fit
+    shift: f32,
+    pads: (f32, f32),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -106,9 +109,9 @@ pub struct Bounds {
 }
 
 impl Bounds {
+    /// The room's box at the default angle.
     pub fn of(o: &Layout) -> Self {
-        let (w, h) = (o.w as f32, o.h as f32);
-        Self { min_x: iso(0.0, h).0 - 10.0, max_x: iso(w, 0.0).0 + 10.0, min_y: iso(0.0, 0.0).1 - WH - 40.0, max_y: iso(w, h).1 + 24.0 }
+        view::View::default_for(o).bounds(o)
     }
     pub fn width(&self) -> f32 {
         self.max_x - self.min_x
@@ -122,7 +125,7 @@ pub const MAX_ZOOM: f32 = 2.8;
 
 impl Camera {
     pub fn new() -> Self {
-        Self { z: 1.0, cx: 0.0, cy: 0.0, fit: 1.0, home: (0.0, 0.0), bounds: Bounds::default(), w: 1.0, h: 1.0 }
+        Self { z: 1.0, cx: 0.0, cy: 0.0, fit: 1.0, home: (0.0, 0.0), bounds: Bounds::default(), w: 1.0, h: 1.0, shift: 0.0, pads: (0.0, 0.0) }
     }
 
     /// Fits the office into the stage, leaving room for the HUD bars. `fresh` recentres.
@@ -130,11 +133,36 @@ impl Camera {
         self.w = w.max(1.0);
         self.h = h.max(1.0);
         self.bounds = b;
-        self.fit = (self.w / b.width()).min((self.h - pad_top - pad_bot).max(80.0) / b.height());
-        self.home = ((b.min_x + b.max_x) / 2.0, (b.min_y + b.max_y) / 2.0 - (pad_top - pad_bot) / 2.0 / self.fit);
+        self.pads = (pad_top, pad_bot);
+        self.fit = self.fit_for(b);
+        self.shift = (pad_top - pad_bot) / 2.0 / self.fit;
+        self.home = ((b.min_x + b.max_x) / 2.0, (b.min_y + b.max_y) / 2.0 - self.shift);
         if fresh {
             self.z = 1.0;
             (self.cx, self.cy) = self.home;
+        }
+        self.clamp();
+    }
+
+    fn fit_for(&self, b: Bounds) -> f32 {
+        (self.w / b.width()).min((self.h - self.pads.0 - self.pads.1).max(80.0) / b.height())
+    }
+
+    /// The room's box changed because the view turned. Zoomed in, only the limits move; at fit,
+    /// the fit eases (by `k`) to frame the room's new shape.
+    pub fn set_bounds(&mut self, b: Bounds, k: f32) {
+        if self.z <= 1.0001 {
+            self.fit += (self.fit_for(b) - self.fit) * k;
+            self.shift = (self.pads.0 - self.pads.1) / 2.0 / self.fit;
+        }
+        let home = ((b.min_x + b.max_x) / 2.0, (b.min_y + b.max_y) / 2.0 - self.shift);
+        let moved = (home.0 - self.home.0, home.1 - self.home.1);
+        self.bounds = b;
+        self.home = home;
+        // at fit, stay centred on the room as it turns
+        if self.z <= 1.0001 {
+            self.cx += moved.0;
+            self.cy += moved.1;
         }
         self.clamp();
     }

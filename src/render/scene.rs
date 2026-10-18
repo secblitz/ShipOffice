@@ -2,10 +2,12 @@
 //! the pointer need. Mirrors `render()` in the browser prototype.
 
 use super::assets::{meta, sheet_key};
+use super::paint::CUTAWAY;
+use super::view::{wall_height, View, Wall};
 use super::{DrawList, Fx, Instance, Layer, TexKey};
 use crate::office::gen::{Atlas, Prop, SeatKind};
 use crate::office::world::{Anim, Avatar, GameState, SeatRef, World};
-use crate::office::{iso, Face, TH, TW};
+use crate::office::{TH, TW};
 
 /// Sprite scale and how far below the tile centre the feet sit, per sheet family.
 fn sheet_scale(base: &str) -> (f32, f32) {
@@ -44,23 +46,20 @@ fn prop_width(name: &str) -> Option<f32> {
     }
 }
 
-/// logical animation + facing -> (sheet family, mirrored, fixed frame)
-fn resolve(a: &Avatar) -> (&'static str, bool, Option<u32>) {
-    use Face::*;
-    match (a.anim, a.face) {
-        (Anim::Walk, DR) => ("walk", false, None),
-        (Anim::Walk, DL) => ("walk", true, None),
-        (Anim::Walk, UR) => ("walkback", false, None),
-        (Anim::Walk, UL) => ("walkback", true, None),
-        (Anim::Stand, DR) => ("idle", false, None),
-        (Anim::Stand, DL) => ("idle", true, None),
-        (Anim::Stand, UR) => ("walkback", false, Some(0)),
-        (Anim::Stand, UL) => ("walkback", true, Some(0)),
-        (Anim::Type, _) => ("type", false, None),
-        (Anim::Read, _) => ("read", false, None),
-        (Anim::Sit, f) => ("sit", matches!(f, DL | UL), None),
-        (Anim::PingPongFront, _) => ("ppfront", false, None),
-        (Anim::PingPongBack, _) => ("ppback", true, None),
+/// logical animation + facing -> (sheet family, mirrored, fixed frame). Facing is in the room;
+/// the view decides how it reads on screen.
+fn resolve(a: &Avatar, v: &View) -> (&'static str, bool, Option<u32>) {
+    let (toward, right) = v.facing(a.face);
+    let m = v.mirrored();
+    match a.anim {
+        Anim::Walk => (if toward { "walk" } else { "walkback" }, !right, None),
+        Anim::Stand if toward => ("idle", !right, None),
+        Anim::Stand => ("walkback", !right, Some(0)),
+        Anim::Type => ("type", m, None),
+        Anim::Read => ("read", m, None),
+        Anim::Sit => ("sit", !right, None),
+        Anim::PingPongFront => ("ppfront", m, None),
+        Anim::PingPongBack => ("ppback", !m, None),
     }
 }
 
@@ -103,7 +102,9 @@ impl Scene {
 
 pub struct Inputs<'a> {
     pub world: &'a World,
-    pub static_layer: Option<&'a Layer>,
+    pub view: &'a View,
+    /// floor, then the back, left, front and right walls
+    pub statics: Option<&'a [Layer; 5]>,
     /// the whiteboard texture and the world rect it covers before the wall skew
     pub board: Option<&'a Layer>,
     pub hover: Option<Hit>,
@@ -120,99 +121,108 @@ fn uv_rect(x: u32, y: u32, w: u32, h: u32, size: (u32, u32)) -> [f32; 4] {
 
 const FULL: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
-/// The prop's art rect, scale, horizontal centre and baseline, like `propBox`.
-fn prop_box(p: &Prop) -> Option<(&'static str, [u32; 4], f32, f32, f32)> {
+/// The prop's art rect, scale, horizontal centre and baseline, like `propBox`: centred on its
+/// footprint, standing on the footprint's lowest corner on screen.
+fn prop_box(p: &Prop, v: &View) -> Option<(&'static str, [u32; 4], f32, f32, f32)> {
     let &(file, rect) = meta().items.get(p.name)?;
     let (w, h) = (rect[2] as f32, rect[3] as f32);
     let s = prop_width(p.name).map(|pw| pw / w).unwrap_or_else(|| prop_height(p.name).unwrap_or(50.0) / h);
     let (x, y, fx, fy) = (p.x as f32, p.y as f32, p.fx as f32, p.fy as f32);
-    let cx = (iso(x, y + fy).0 + iso(x + fx, y).0) / 2.0;
-    let by = iso(x + fx, y + fy).1 - if p.fx > 1 { 6.0 } else { 5.0 };
+    let corners = [v.floor(x, y), v.floor(x + fx, y), v.floor(x, y + fy), v.floor(x + fx, y + fy)];
+    let cx = v.floor(x + fx / 2.0, y + fy / 2.0).0;
+    let by = corners.iter().map(|c| c.1).fold(f32::MIN, f32::max) - if p.fx > 1 || p.fy > 1 { 6.0 } else { 5.0 };
     Some((file, rect, s, cx, by))
 }
 
-/// The prop as a quad and its world rect.
-fn prop_quad(p: &Prop) -> Option<(TexKey, Instance, [f32; 4])> {
-    let m = meta();
-    if p.atlas == Atlas::Desk {
-        let (cx, cy) = iso(p.x as f32 + 0.5, p.y as f32 + 0.5);
-        let (s, lift) = sheet_scale("type");
-        let (dw, dh) = (m.desk_empty.0 as f32 * s, m.desk_empty.1 as f32 * s);
-        let inst = Instance::rect(cx - dw / 2.0, cy + lift - dh, dw, dh, FULL, false);
-        return Some((TexKey::Atlas("desk_empty.webp"), inst, [cx - dw / 2.0 + 12.0, cy + lift - dh * 0.55, dw - 24.0, dh * 0.55]));
-    }
-    let (file, r, s, cx, by) = prop_box(p)?;
-    let (w, h) = (r[2] as f32 * s, r[3] as f32 * s);
-    let uv = uv_rect(r[0], r[1], r[2], r[3], m.atlas_size[file]);
-    let inst = Instance::rect(cx - w / 2.0, by - h, w, h, uv, p.flip);
-    Some((TexKey::Atlas(file), inst, [cx - w / 2.0, by - h, w, h]))
+/// Draw order for a prop: its nearest tile, plus the plan's hint for how it overlaps.
+fn prop_depth(p: &Prop, v: &View) -> f32 {
+    let tiles = (0..p.fx).flat_map(|i| (0..p.fy).map(move |j| (p.x + i, p.y + j)));
+    let near = tiles.map(|(x, y)| v.depth(x as f32 + 0.5, y as f32 + 0.5)).fold(f32::MIN, f32::max);
+    // the plan's depth hints are written for the default angle, relative to the front tile
+    let hint = p.depth.map_or(0.6, |d| d - (p.x + p.fx - 1 + p.y + p.fy - 1) as f32);
+    near + hint
 }
 
-/// Maps the unit square onto a rect drawn in a wall's skewed space, like `wallTransform`.
-/// `back` walls run along x (screen down-right), the left wall along y (screen down-left).
-pub fn wall_quad(back: bool, start: f32, x: f32, y: f32, w: f32, h: f32) -> ([f32; 4], [f32; 2]) {
-    let (ox, oy, k) = if back {
-        let (a, b) = iso(start, 0.0);
-        (a, b, 0.5)
-    } else {
-        let (a, b) = iso(0.0, start);
-        (a, b, -0.5)
-    };
-    ([w, k * w, 0.0, h], [ox + x, oy + k * x + y])
+/// The prop as a billboard quad and its screen rect.
+fn prop_quad(p: &Prop, v: &View) -> Option<(TexKey, Instance, [f32; 4])> {
+    let m = meta();
+    if p.atlas == Atlas::Desk {
+        let (cx, cy) = v.floor(p.x as f32 + 0.5, p.y as f32 + 0.5);
+        let (s, lift) = sheet_scale("type");
+        let (dw, dh) = (m.desk_empty.0 as f32 * s, m.desk_empty.1 as f32 * s);
+        let inst = Instance::rect(cx - dw / 2.0, cy + lift - dh, dw, dh, FULL, v.mirrored());
+        return Some((TexKey::Atlas("desk_empty.webp"), inst, [cx - dw / 2.0 + 12.0, cy + lift - dh * 0.55, dw - 24.0, dh * 0.55]));
+    }
+    let (file, r, s, cx, by) = prop_box(p, v)?;
+    let (w, h) = (r[2] as f32 * s, r[3] as f32 * s);
+    let uv = uv_rect(r[0], r[1], r[2], r[3], m.atlas_size[file]);
+    let inst = Instance::rect(cx - w / 2.0, by - h, w, h, uv, p.flip != v.mirrored());
+    Some((TexKey::Atlas(file), inst, [cx - w / 2.0, by - h, w, h]))
 }
 
 pub fn build(inp: &Inputs) -> Scene {
     let w = inp.world;
+    let v = inp.view;
     let o = &w.s.layout;
     let m = meta();
     let mut sc = Scene::default();
-    let th = o.theme;
-    sc.list.background = [0x14, 0x1a, 0x26];
-
-    let b = super::Bounds::of(o);
-    if let Some(l) = inp.static_layer {
-        sc.list.layers.push(l.clone());
-        sc.list.items.push((TexKey::Layer(l.id), Instance::rect(b.min_x, b.min_y, b.width(), b.height(), FULL, false)));
-    }
-    // the whiteboard hangs on the back wall
-    let span = (o.bx1 - o.bx0) as f32 * TW / 2.0;
-    if let Some(l) = inp.board {
-        sc.list.layers.push(l.clone());
-        let (mm, t) = wall_quad(true, o.bx0 as f32, -3.0, -110.0, span + 6.0, 76.0);
-        sc.list.items.push((TexKey::Layer(l.id), Instance::affine(mm, t, FULL)));
-    }
-    let board_hot = matches!(inp.hover, Some(Hit::Board));
-    if board_hot {
-        let c = [240, 181, 74, 230];
-        for (x, y, ww, hh) in [(-5.0, -112.0, span + 10.0, 2.0), (-5.0, -34.0, span + 10.0, 2.0), (-5.0, -112.0, 2.0, 80.0), (span + 3.0, -112.0, 2.0, 80.0)] {
-            let (mm, t) = wall_quad(true, o.bx0 as f32, x, y, ww, hh);
-            sc.list.items.push((TexKey::Fx(Fx::White), Instance::affine(mm, t, FULL).tint(c)));
+    let (ww, hh, zt) = (o.w as f32, o.h as f32, wall_height());
+    let walls = [
+        (Wall::Back, [0.0, 0.0, zt], [ww, 0.0, 0.0]),
+        (Wall::Left, [0.0, 0.0, zt], [0.0, hh, 0.0]),
+        (Wall::Front, [0.0, hh, zt], [ww, 0.0, 0.0]),
+        (Wall::Right, [ww, 0.0, zt], [0.0, hh, 0.0]),
+    ];
+    // the floor, then the walls behind the room at full height
+    if let Some(st) = inp.statics {
+        sc.list.layers.extend(st.iter().cloned());
+        let (mm, t) = v.plane([0.0, 0.0, 0.0], [ww, 0.0, 0.0], [0.0, hh, 0.0]);
+        sc.list.items.push((TexKey::Layer(st[0].id), Instance::affine(mm, t, FULL)));
+        for (i, (wall, o3, u)) in walls.iter().enumerate() {
+            if v.behind(*wall) {
+                let (mm, t) = v.plane(*o3, *u, [0.0, 0.0, -zt]);
+                sc.list.items.push((TexKey::Layer(st[i + 1].id), Instance::affine(mm, t, FULL)));
+            }
         }
     }
-    // board hit area: an upright rect around the skewed board is close enough
-    {
-        let (x0, y0) = iso(o.bx0 as f32, 0.0);
-        sc.hits.push((Hit::Board, [x0 - 3.0, y0 - 110.0, span + 6.0, 76.0 + span * 0.5]));
+    let back = v.behind(Wall::Back);
+    // the whiteboard hangs on the back wall
+    let span = (o.bx1 - o.bx0) as f32 * TW / 2.0;
+    if let (Some(l), true) = (inp.board, back) {
+        sc.list.layers.push(l.clone());
+        let (mm, t) = v.wall_rect(true, o.bx0 as f32, -3.0, -110.0, span + 6.0, 76.0);
+        sc.list.items.push((TexKey::Layer(l.id), Instance::affine(mm, t, FULL)));
+        if matches!(inp.hover, Some(Hit::Board)) {
+            let c = [240, 181, 74, 230];
+            for (x, y, w2, h2) in [(-5.0, -112.0, span + 10.0, 2.0), (-5.0, -34.0, span + 10.0, 2.0), (-5.0, -112.0, 2.0, 80.0), (span + 3.0, -112.0, 2.0, 80.0)] {
+                let (mm, t) = v.wall_rect(true, o.bx0 as f32, x, y, w2, h2);
+                sc.list.items.push((TexKey::Fx(Fx::White), Instance::affine(mm, t, FULL).tint(c)));
+            }
+        }
+        let pts = [v.wall_rect(true, o.bx0 as f32, -3.0, -110.0, span + 6.0, 76.0)];
+        let (mm, t) = pts[0];
+        let xs = [t[0], t[0] + mm[0], t[0] + mm[2], t[0] + mm[0] + mm[2]];
+        let ys = [t[1], t[1] + mm[1], t[1] + mm[3], t[1] + mm[1] + mm[3]];
+        let (x0, x1) = (xs.iter().copied().fold(f32::MAX, f32::min), xs.iter().copied().fold(f32::MIN, f32::max));
+        let (y0, y1) = (ys.iter().copied().fold(f32::MAX, f32::min), ys.iter().copied().fold(f32::MIN, f32::max));
+        sc.hits.push((Hit::Board, [x0, y0, x1 - x0, y1 - y0]));
     }
     // the projector over the lounge lights up when someone is on the couch
-    let lit = w.avatars.iter().any(|a| matches!(a.seated, Some(r) if w.s.seat(r).kind == SeatKind::Couch));
-    let pspan = (o.w - o.l0) as f32 * TW / 2.0;
-    let (mm, t) = wall_quad(true, o.l0 as f32, -2.0, -112.0, pspan + 4.0, 50.0);
-    sc.list.items.push((TexKey::Fx(Fx::White), Instance::affine(mm, t, FULL).tint([0x20, 0x23, 0x2b, 255])));
-    let screen = if lit {
-        let hue = (inp.now * 8.0) % 360.0;
-        hsl(hue, 0.5, 0.45)
-    } else {
-        [0x2b, 0x2f, 0x3a]
-    };
-    let (mm, t) = wall_quad(true, o.l0 as f32, 1.0, -109.0, pspan - 2.0, 44.0);
-    sc.list.items.push((TexKey::Fx(Fx::White), Instance::affine(mm, t, FULL).tint([screen[0], screen[1], screen[2], 255])));
-    if lit {
-        let x = (inp.now * 14.0) % (pspan + 30.0) - 15.0;
-        let (mm, t) = wall_quad(true, o.l0 as f32, x, -76.0, 9.0, 12.0);
-        sc.list.items.push((TexKey::Fx(Fx::White), Instance::affine(mm, t, FULL).tint([20, 24, 34, 216])));
-        let (mm, t) = wall_quad(true, o.l0 as f32, span.min(pspan) * 0.0 + pspan * 0.72, -103.0 + (inp.now * 0.6).sin() * 3.0, 10.0, 10.0);
-        sc.list.items.push((TexKey::Fx(Fx::Dot), Instance::affine(mm, t, FULL).tint([255, 240, 200, 230])));
+    if back {
+        let lit = w.avatars.iter().any(|a| matches!(a.seated, Some(r) if w.s.seat(r).kind == SeatKind::Couch));
+        let pspan = (o.w - o.l0) as f32 * TW / 2.0;
+        let (mm, t) = v.wall_rect(true, o.l0 as f32, -2.0, -112.0, pspan + 4.0, 50.0);
+        sc.list.items.push((TexKey::Fx(Fx::White), Instance::affine(mm, t, FULL).tint([0x20, 0x23, 0x2b, 255])));
+        let screen = if lit { hsl((inp.now * 8.0) % 360.0, 0.5, 0.45) } else { [0x2b, 0x2f, 0x3a] };
+        let (mm, t) = v.wall_rect(true, o.l0 as f32, 1.0, -109.0, pspan - 2.0, 44.0);
+        sc.list.items.push((TexKey::Fx(Fx::White), Instance::affine(mm, t, FULL).tint([screen[0], screen[1], screen[2], 255])));
+        if lit {
+            let x = (inp.now * 14.0) % (pspan + 30.0) - 15.0;
+            let (mm, t) = v.wall_rect(true, o.l0 as f32, x, -76.0, 9.0, 12.0);
+            sc.list.items.push((TexKey::Fx(Fx::White), Instance::affine(mm, t, FULL).tint([20, 24, 34, 216])));
+            let (mm, t) = v.wall_rect(true, o.l0 as f32, pspan * 0.72, -103.0 + (inp.now * 0.6).sin() * 3.0, 10.0, 10.0);
+            sc.list.items.push((TexKey::Fx(Fx::Dot), Instance::affine(mm, t, FULL).tint([255, 240, 200, 230])));
+        }
     }
 
     // everything that stands on the floor, sorted back to front
@@ -224,15 +234,15 @@ pub fn build(inp: &Inputs) -> Scene {
         if p.atlas == Atlas::Desk && o.desks.iter().position(|d| d.x == p.x && d.y == p.y).is_some_and(|i| occupied.contains(&i)) {
             continue;
         }
-        let Some((key, mut inst, rect)) = prop_quad(p) else { continue };
-        let d = p.depth();
+        let Some((key, mut inst, rect)) = prop_quad(p, v) else { continue };
+        let d = prop_depth(p, v);
         if inp.hover == Some(Hit::Prop(pi)) {
             inst.glow = 0.16;
         }
         items.push((d, key, inst));
         hits.push((d, Hit::Prop(pi), rect));
         if p.name == "coffee" && brewing {
-            if let Some((_, r, s, cx, by)) = prop_box(p) {
+            if let Some((_, r, s, cx, by)) = prop_box(p, v) {
                 let (x, y) = (cx + 8.0, by - r[3] as f32 * s + 10.0);
                 for k in 0..3 {
                     let u = (inp.now * 0.7 + k as f32 / 3.0).fract();
@@ -244,35 +254,41 @@ pub fn build(inp: &Inputs) -> Scene {
             }
         }
     }
+    let glass_h = 44.0 / crate::office::WH * zt;
     for &gy in &o.glass {
-        let (ax, ay) = iso(o.px as f32 + 0.5, gy as f32);
-        let (bx, by) = iso(o.px as f32 + 0.5, gy as f32 + 1.0);
-        let inst = Instance::affine([bx - ax, by - ay, 0.0, 44.0], [ax, ay - 44.0], FULL);
-        items.push(((o.px + gy) as f32 + 0.55, TexKey::Fx(Fx::Glass), inst));
+        let (mm, t) = v.plane([o.px as f32 + 0.5, gy as f32, glass_h], [0.0, 1.0, 0.0], [0.0, 0.0, -glass_h]);
+        items.push((v.depth(o.px as f32 + 0.5, gy as f32 + 0.5) + 0.55, TexKey::Fx(Fx::Glass), Instance::affine(mm, t, FULL)));
     }
     for a in &w.avatars {
         let seat = a.seated.map(|r| w.s.seat(r));
-        let d = seat.map_or(a.x + a.y + 0.5, |s| s.depth());
-        let (base, flip, fixed) = resolve(a);
+        let d = match seat {
+            // the plan's seat hints are written for the default angle, relative to the seat tile
+            Some(s) => v.depth(s.x as f32 + 0.5, s.y as f32 + 0.5) + s.depth.map_or(0.65, |h| h - (s.x + s.y) as f32),
+            None => v.depth(a.x + 0.5, a.y + 0.5) + 0.5,
+        };
+        let (base, flip, fixed) = resolve(a, v);
         let key = sheet_key(base, a.char_id);
         let Some(an) = m.anims.get(&key) else { continue };
         let (s, lift0) = sheet_scale(base);
-        let (px0, cy) = iso(a.x + 0.5, a.y + 0.5);
-        let cx = px0 + seat.map_or(0.0, |s| s.dx);
+        let (px0, cy) = v.floor(a.x + 0.5, a.y + 0.5);
+        let cx = px0 + seat.map_or(0.0, |s| if v.mirrored() { -s.dx } else { s.dx });
         let lift = match seat {
             Some(st) if st.kind != SeatKind::Desk => st.lift,
             _ => lift0,
         };
         let by = cy + lift;
         let col = a.color();
+        // the shadow and the selection ring lie on the floor, so they turn with it
+        let feet = |r: f32| v.plane([a.x + 0.5 - r, a.y + 0.5 - r, 0.0], [2.0 * r, 0.0, 0.0], [0.0, 2.0 * r, 0.0]);
         if seat.is_none() {
-            let inst = Instance::rect(cx - 13.0, by - 7.0, 26.0, 10.0, FULL, false).tint([10, 12, 20, (0.22 * 255.0 * a.alpha) as u8]);
-            items.push((d - 0.002, TexKey::Fx(Fx::Shadow), inst));
+            let (mm, t) = feet(0.3);
+            items.push((d - 0.002, TexKey::Fx(Fx::Shadow), Instance::affine(mm, t, FULL).tint([10, 12, 20, (0.22 * 255.0 * a.alpha) as u8])));
         }
         let ring = if inp.selected == Some(a.id) { 1.0 } else if inp.hover == Some(Hit::Agent(a.id)) { 0.7 } else { 0.0 };
         if ring > 0.0 {
-            let inst = Instance::rect(cx - 18.0, by - 10.0, 36.0, 16.0, FULL, false).tint([col[0], col[1], col[2], (255.0 * ring) as u8]);
-            items.push((d - 0.001, TexKey::Fx(Fx::Ring), inst));
+            let pulse = if inp.selected == Some(a.id) { 1.0 + 0.04 * (inp.now * 4.0).sin() } else { 1.0 };
+            let (mm, t) = feet(0.4 * pulse);
+            items.push((d - 0.001, TexKey::Fx(Fx::Ring), Instance::affine(mm, t, FULL).tint([col[0], col[1], col[2], (255.0 * ring) as u8])));
         }
         let i = match fixed {
             Some(f) => f,
@@ -303,7 +319,7 @@ pub fn build(inp: &Inputs) -> Scene {
         let head_y = by - dh + if desk { 17.0 } else { 2.0 };
         let top = by - dh + if desk { 13.0 } else { 0.0 };
         let paddle = match base {
-            "ppfront" => Some((cx + 16.0, by - 34.0)),
+            "ppfront" => Some((cx + if flip { -16.0 } else { 16.0 }, by - 34.0)),
             "ppback" => Some((cx + if flip { -14.0 } else { 14.0 }, by - 40.0)),
             _ => None,
         };
@@ -314,6 +330,16 @@ pub fn build(inp: &Inputs) -> Scene {
     }
     items.sort_by(|p, q| p.0.total_cmp(&q.0));
     sc.list.items.extend(items.into_iter().map(|(_, k, i)| (k, i)));
+    // walls between you and the room are cut down to a skirting, drawn over everything
+    if let Some(st) = inp.statics {
+        for (i, (wall, o3, u)) in walls.iter().enumerate() {
+            if !v.behind(*wall) {
+                let hcut = zt * CUTAWAY;
+                let (mm, t) = v.plane([o3[0], o3[1], hcut], *u, [0.0, 0.0, -hcut]);
+                sc.list.items.push((TexKey::Layer(st[i + 1].id), Instance::affine(mm, t, [0.0, 1.0 - CUTAWAY, 1.0, 1.0])));
+            }
+        }
+    }
     // people win over furniture when both are under the pointer
     hits.sort_by(|p, q| {
         let pa = matches!(p.1, Hit::Agent(_));
@@ -324,13 +350,12 @@ pub fn build(inp: &Inputs) -> Scene {
     sc.hits.extend(hits.into_iter().map(|(_, h, r)| (h, r)));
     sc.hits.extend(board);
 
-    ball(w, &sc.heads.clone(), &mut sc.list);
-    let _ = th;
+    ball(w, v, &sc.heads.clone(), &mut sc.list);
     sc
 }
 
 /// The ping pong ball flies paddle to paddle with a bounce on the table.
-fn ball(w: &World, heads: &[Head], list: &mut DrawList) {
+fn ball(w: &World, v: &View, heads: &[Head], list: &mut DrawList) {
     let Some(g) = w.s.game.as_ref().filter(|g| g.state == GameState::Playing) else { return };
     let pa = heads.iter().find(|h| h.id == g.a).and_then(|h| h.paddle);
     let pb = heads.iter().find(|h| Some(h.id) == g.b).and_then(|h| h.paddle);
@@ -341,7 +366,7 @@ fn ball(w: &World, heads: &[Head], list: &mut DrawList) {
     let (from, to) = if forward { (pa, pb) } else { (pb, pa) };
     let o = &w.s.layout;
     let t = &o.props[o.lounge.pp_table];
-    let (_, tcy) = iso(t.x as f32 + 1.0, t.y as f32 + 0.5);
+    let (_, tcy) = v.floor(t.x as f32 + 1.0, t.y as f32 + 0.5);
     let surf = tcy - 22.0;
     let bounce = 0.66;
     let bx = from.0 + (to.0 - from.0) * bounce;

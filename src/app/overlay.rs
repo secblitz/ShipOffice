@@ -22,6 +22,7 @@ pub struct Overlay<'a> {
     pub selected: Option<u32>,
     pub bubbles: bool,
     pub stage: Size,
+    pub view: Option<crate::render::view::View>,
 }
 
 #[derive(Default)]
@@ -29,6 +30,9 @@ pub struct State {
     press: Option<Point>,
     last: Option<Point>,
     dragged: bool,
+    /// this drag turns the view instead of panning (right button, or shift + left)
+    orbit: bool,
+    shift: bool,
     hover: Option<Hit>,
 }
 
@@ -46,9 +50,10 @@ impl canvas::Program<Message> for Overlay<'_> {
                     if st.press.is_some() {
                         let d = p - last;
                         st.last = Some(p);
-                        if st.dragged || d.x.abs() + d.y.abs() > 0.0 && st.press.is_some_and(|q| q.distance(p) > 4.0) {
+                        if st.dragged || st.press.is_some_and(|q| q.distance(p) > 4.0) {
                             st.dragged = true;
-                            return Some(Action::publish(Message::Pan(d)).and_capture());
+                            let m = if st.orbit { Message::Orbit(d) } else { Message::Pan(d) };
+                            return Some(Action::publish(m).and_capture());
                         }
                         return None;
                     }
@@ -63,18 +68,28 @@ impl canvas::Program<Message> for Overlay<'_> {
                 }
                 None
             }
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                let p = pos?;
-                let _ = p;
+            Event::Keyboard(iced::keyboard::Event::ModifiersChanged(m)) => {
+                st.shift = m.shift();
+                None
+            }
+            Event::Mouse(mouse::Event::ButtonPressed(b @ (mouse::Button::Left | mouse::Button::Right))) => {
+                pos?;
                 st.press = cursor.position();
                 st.last = cursor.position();
                 st.dragged = false;
+                st.orbit = *b == mouse::Button::Right || st.shift;
                 Some(Action::capture())
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Right)) => {
+                st.press = None;
+                st.last = None;
+                st.dragged = false;
+                None
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                 let was = st.press.take();
                 st.last = None;
-                if was.is_none() || st.dragged {
+                if was.is_none() || st.dragged || st.orbit {
                     st.dragged = false;
                     return None;
                 }
@@ -135,7 +150,9 @@ impl canvas::Program<Message> for Overlay<'_> {
         items.sort_by(|p, q| q.1.total_cmp(&p.1));
         let mut placed: Vec<Rectangle> = Vec::new();
         for (sx, sy, a, b) in items {
-            let (w, h) = bubble_size(b.kind, &b.text, ub);
+            // bubbles pop in: a quick ease-out-back on their first fifth of a second
+            let k = ub * pop(b.dur - b.left);
+            let (w, h) = bubble_size(b.kind, &b.text, k);
             let mut lift = 0.0;
             for _ in 0..8 {
                 let r = Rectangle::new(Point::new(sx - w / 2.0, sy - h - lift), Size::new(w, h));
@@ -146,11 +163,11 @@ impl canvas::Program<Message> for Overlay<'_> {
             }
             placed.push(Rectangle::new(Point::new(sx - w / 2.0, sy - h - lift), Size::new(w, h)));
             let fade = (b.left / 0.35).min((b.dur - b.left) / 0.2 + 0.2).clamp(0.0, 1.0);
-            bubble(&mut f, b.kind, &b.text, style::rgb8(a.color()), sx, sy, lift, ub, fade);
+            bubble(&mut f, b.kind, &b.text, style::rgb8(a.color()), sx, sy, lift, k, fade);
         }
         if let Some(g) = world.s.game.as_ref().filter(|g| g.state == GameState::Playing) {
             let t = &world.s.layout.props[world.s.layout.lounge.pp_table];
-            let (wx, wy) = iso(t.x as f32 + 1.0, t.y as f32 + 0.5);
+            let (wx, wy) = self.view.map_or_else(|| iso(t.x as f32 + 1.0, t.y as f32 + 0.5), |v| v.floor(t.x as f32 + 1.0, t.y as f32 + 0.5));
             let (sx, sy) = self.cam.to_screen(wx, wy);
             let ca = world.avatar(g.a).map(|a| style::rgb8(a.color())).unwrap_or(p().muted);
             let cb = g.b.and_then(|b| world.avatar(b)).map(|a| style::rgb8(a.color())).unwrap_or(p().muted);
@@ -216,6 +233,14 @@ fn label(f: &mut Frame, s: &str, x: f32, baseline: f32, size: f32, color: Color,
 
 fn rounded(x: f32, y: f32, w: f32, h: f32, r: f32) -> Path {
     Path::rounded_rectangle(Point::new(x, y), Size::new(w, h), r.into())
+}
+
+/// Scale for something appearing `age` seconds ago: overshoots a hair, then settles at 1.
+fn pop(age: f32) -> f32 {
+    let t = (age / 0.2).clamp(0.0, 1.0);
+    let (c1, c3) = (1.70158, 2.70158);
+    let back = 1.0 + c3 * (t - 1.0).powi(3) + c1 * (t - 1.0).powi(2);
+    0.82 + 0.18 * back
 }
 
 fn tool_text(text: &str) -> String {
