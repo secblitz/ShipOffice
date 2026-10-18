@@ -53,6 +53,7 @@ Each one is read from the session files it already writes; [docs/harnesses.md](d
 - **A floor of a skyscraper.** Your office sits high above New York by day or by night, with the skyline, the floors below yours, and traffic in the streets.
 - **Know what each agent knows.** Click anyone to see their tokens, tool calls and how full their context is, measured against the compaction point you set in your harness.
 - **Every session at a glance.** Tabs for your live sessions, cost and timing on the whiteboard, and a live feed of everything that happens.
+- **Show how locked in you are.** The ⚡ Locked in button turns what your agents are doing right now into a card for your feed: a score out of 100, the office itself, the crew's faces, tool calls, tokens and how long you have been at it. Save it as a PNG and copy a caption to post with it.
 - **Make it yours.** Themes, accent colours, office styles, the city backdrop or none, all from a settings menu.
 - **Private by design.** ShipOffice only reads the logs on your disk. It never writes to them, never opens credential files and never sends anything over the network.
 
@@ -102,6 +103,7 @@ Run `shipoffice` and start an agent anywhere. With nothing running yet, a demo c
 | Q / E | Turn a quarter |
 | R | Back to the classic angle |
 | N | A new office for this session |
+| L | Make a Locked in card to share |
 | Click someone | Inspect them |
 | F | Follow the selected agent |
 | Tab | Next agent |

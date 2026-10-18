@@ -7,6 +7,7 @@ pub mod icon;
 pub mod overlay;
 pub mod popover;
 pub mod portrait;
+pub mod share;
 pub mod style;
 
 use crate::config::Config;
@@ -75,6 +76,30 @@ pub enum Message {
     Setting(Setting),
     /// debug: `SHIPOFFICE_SCREENSHOT=path.png` saves the window after a few seconds and quits
     Shot(window::Screenshot),
+    /// make the Locked in card: capture the office, then show the card
+    LockedIn,
+    LockedInShot(window::Screenshot),
+    SaveCard,
+    CopyCaption,
+    ShowCardFolder,
+    CloseCard,
+}
+
+/// The Locked in card, from the moment the office is captured to the preview.
+pub enum Sharing {
+    /// the HUD is hidden; the office is captured after this many more ticks, so a frame without
+    /// it has been drawn
+    Capturing(u8),
+    Shooting,
+    Ready(Card),
+}
+
+pub struct Card {
+    pub image: image::RgbaImage,
+    pub handle: iced::widget::image::Handle,
+    pub caption: String,
+    pub saved: Option<PathBuf>,
+    pub copied: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -168,6 +193,7 @@ pub struct App {
     pub board_open: bool,
     pub settings_open: bool,
     pub crew_open: bool,
+    pub sharing: Option<Sharing>,
     pub color_drafts: HashMap<String, String>,
     pub harnesses: Vec<HarnessInfo>,
     pub path_input: String,
@@ -200,6 +226,8 @@ pub struct App {
     pub colors_open: bool,
     /// debug: select the first agent once an office has one
     inspect_pending: bool,
+    /// debug: make the Locked in card this many seconds in
+    card_at: Option<f32>,
     /// when the active office was last regenerated (the dice spins)
     pub rolled: Option<Instant>,
     next_uid: u64,
@@ -207,6 +235,8 @@ pub struct App {
 }
 
 pub fn run() -> iced::Result {
+    // the local offset can only be read safely while this is the only thread
+    let _ = LOCAL_OFFSET.set(time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC));
     let mut win = window::Settings { size: Size::new(1320.0, 840.0), min_size: Some(Size::new(760.0, 520.0)), icon: icon::app_icon(), ..Default::default() };
     // native chrome without a title bar: macOS keeps its traffic lights over the HUD,
     // elsewhere the HUD draws its own window controls and the edges resize the window
@@ -263,6 +293,7 @@ impl App {
             board_open: false,
             settings_open: false,
             crew_open: false,
+            sharing: None,
             color_drafts: HashMap::new(),
             harnesses,
             path_input: String::new(),
@@ -288,12 +319,14 @@ impl App {
             page: Page::default(),
             colors_open: false,
             inspect_pending: false,
+            card_at: None,
             rolled: None,
             next_uid: 1,
             shot_taken: false,
         };
         let mut app = app;
         // debug: SHIPOFFICE_OPEN="settings,page=office,menu=fps,colors" starts with those open,
+        // ("card=6" makes the Locked in card after 6 s)
         // for screenshots of the HUD
         if let Ok(v) = std::env::var("SHIPOFFICE_OPEN") {
             for part in v.split(',').map(str::trim) {
@@ -301,6 +334,8 @@ impl App {
                     None if part == "settings" => app.settings_open = true,
                     None if part == "colors" => app.colors_open = true,
                     None if part == "inspect" => app.inspect_pending = true,
+                    None if part == "card" => app.card_at = Some(5.0),
+                    Some(("card", secs)) => app.card_at = secs.parse().ok(),
                     Some(("page", "look")) => app.page = Page::Look,
                     Some(("page", "sources")) => app.page = Page::Sources,
                     Some(("page", "office")) => app.page = Page::Office,
@@ -361,7 +396,7 @@ impl App {
         match msg {
             Message::Tick(now) => {
                 self.tick(now);
-                return self.debug_shot();
+                return Task::batch([self.debug_shot(), self.capture()]);
             }
             Message::Visible(v) => self.hidden = !v,
             Message::Shot(shot) => {
@@ -464,6 +499,40 @@ impl App {
                 };
                 self.mark("feed", open);
             }
+            Message::LockedIn => {
+                if self.tab().is_some() && self.sharing.is_none() {
+                    self.menu = None;
+                    self.sharing = Some(Sharing::Capturing(2));
+                }
+            }
+            Message::LockedInShot(shot) => {
+                self.sharing = self.card(&shot).map(Sharing::Ready);
+                self.mark("card", true);
+            }
+            Message::SaveCard => {
+                if let Some(Sharing::Ready(c)) = self.sharing.as_mut() {
+                    let dir = directories::UserDirs::new().and_then(|u| u.picture_dir().map(|d| d.to_path_buf())).unwrap_or_else(|| crate::harness::home().join("Pictures")).join("ShipOffice");
+                    let name = local_now().format(time::macros::format_description!("locked-in-[year]-[month]-[day]-[hour][minute][second].png")).unwrap_or_else(|_| "locked-in.png".into());
+                    let path = dir.join(name);
+                    if std::fs::create_dir_all(&dir).is_ok() && c.image.save(&path).is_ok() {
+                        c.saved = Some(path);
+                    }
+                }
+            }
+            Message::CopyCaption => {
+                if let Some(Sharing::Ready(c)) = self.sharing.as_mut() {
+                    c.copied = true;
+                    return iced::clipboard::write(c.caption.clone());
+                }
+            }
+            Message::ShowCardFolder => {
+                if let Some(Sharing::Ready(Card { saved: Some(path), .. })) = &self.sharing {
+                    if let Some(dir) = path.parent() {
+                        open_folder(dir);
+                    }
+                }
+            }
+            Message::CloseCard => self.sharing = None,
             Message::ToggleCrew => {
                 self.crew_open = !self.crew_open;
                 self.mark("crew", self.crew_open);
@@ -507,6 +576,44 @@ impl App {
         window::latest().and_then(window::screenshot).map(Message::Shot)
     }
 
+    /// Captures the office once the HUD has been off screen for a frame or two.
+    fn capture(&mut self) -> Task<Message> {
+        match self.sharing {
+            Some(Sharing::Capturing(0)) => {
+                self.sharing = Some(Sharing::Shooting);
+                window::latest().and_then(window::screenshot).map(Message::LockedInShot)
+            }
+            Some(Sharing::Capturing(ref mut n)) => {
+                *n -= 1;
+                Task::none()
+            }
+            _ => Task::none(),
+        }
+    }
+
+    /// The Locked in card for what every open session adds up to, the active office as its picture.
+    fn card(&self, shot: &window::Screenshot) -> Option<Card> {
+        let office = image::RgbaImage::from_raw(shot.size.width, shot.size.height, shot.rgba.to_vec())?;
+        // close in on the room, wherever the camera has it
+        let office = match self.tab() {
+            Some(t) => {
+                let b = self.view_of(t).bounds(&t.world.s.layout);
+                let k = shot.size.width as f32 / self.stage.width.max(1.0);
+                let ((x0, y0), (x1, y1)) = (self.cam.to_screen(b.min_x, b.min_y), self.cam.to_screen(b.max_x, b.max_y));
+                share::around(&office, [x0 * k, y0 * k, x1 * k, y1 * k])
+            }
+            None => office,
+        };
+        let stats = share::Stats::gather(self.tabs.iter().filter_map(|t| self.sessions.get(&t.key)));
+        let crew: Vec<share::Member> = self.tabs.iter().flat_map(|t| &t.world.avatars).map(|a| share::Member { face: portrait::face_image(a.char_id, &a.palette), ring: a.color() }).collect();
+        let a = style::p().accent;
+        let accent = [a.r, a.g, a.b].map(|c| (c * 255.0).round() as u8);
+        let date = local_now().format(time::macros::format_description!("[weekday repr:short] [day padding:none] [month repr:short] [year]")).unwrap_or_default();
+        let image = share::card(&office, &stats, &crew, accent, &date);
+        let handle = iced::widget::image::Handle::from_rgba(image.width(), image.height(), image.as_raw().clone());
+        Some(Card { image, handle, caption: share::caption(&stats), saved: None, copied: false })
+    }
+
     fn key(&mut self, k: keyboard::Event) -> Task<Message> {
         use keyboard::key::Named;
         let keyboard::Event::KeyPressed { key, modifiers, .. } = k else { return Task::none() };
@@ -516,7 +623,9 @@ impl App {
         }
         match key.as_ref() {
             keyboard::Key::Named(Named::Escape) => {
-                if self.menu.is_some() {
+                if matches!(self.sharing, Some(Sharing::Ready(_))) {
+                    self.sharing = None;
+                } else if self.menu.is_some() {
                     self.menu = None;
                 } else if self.settings_open {
                     self.settings_open = false;
@@ -536,6 +645,7 @@ impl App {
             keyboard::Key::Character("e") => return self.update(Message::Turn(-std::f32::consts::FRAC_PI_4)),
             keyboard::Key::Character("r") => return self.update(Message::ResetView),
             keyboard::Key::Character("n") => return self.update(Message::NewLayout),
+            keyboard::Key::Character("l") => return self.update(Message::LockedIn),
             keyboard::Key::Character(c) => {
                 if let Some(n) = c.parse::<usize>().ok().filter(|n| (1..=9).contains(n)) {
                     return self.update(Message::SelectTab(n - 1));
@@ -758,6 +868,10 @@ impl App {
             }
         }
         self.motion(dt);
+        if self.card_at.is_some_and(|t| self.started_secs() >= t) {
+            self.card_at = None;
+            let _ = self.update(Message::LockedIn);
+        }
         if self.inspect_pending {
             if let Some(id) = self.tab().and_then(|t| t.world.avatars.first()).map(|a| a.id) {
                 self.inspect_pending = false;
@@ -1058,6 +1172,12 @@ fn expand_home(p: &str) -> PathBuf {
         Some(rest) => harness::home().join(rest),
         None => PathBuf::from(p),
     }
+}
+
+static LOCAL_OFFSET: std::sync::OnceLock<time::UtcOffset> = std::sync::OnceLock::new();
+
+fn local_now() -> time::OffsetDateTime {
+    time::OffsetDateTime::now_utc().to_offset(LOCAL_OFFSET.get().copied().unwrap_or(time::UtcOffset::UTC))
 }
 
 fn open_folder(dir: &std::path::Path) {

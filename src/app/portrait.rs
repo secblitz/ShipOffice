@@ -19,6 +19,11 @@ pub fn portrait(char_id: u8, palette: &Palette) -> Option<Handle> {
     cache.entry((char_id, cols)).or_insert_with(|| face(char_id, &cols).map(|img| Handle::from_rgba(img.width(), img.height(), img.into_raw()))).clone()
 }
 
+/// The same face as an image, for cards drawn off screen.
+pub fn face_image(char_id: u8, palette: &Palette) -> Option<RgbaImage> {
+    face(char_id, &[1usize, 2, 3, 5].map(|r| palette.cols[r].unwrap_or([128, 128, 128])))
+}
+
 /// Frame 0 of the idle sheet (facing you), recoloured, cropped to the head and shoulders.
 fn face(char_id: u8, cols: &[[u8; 3]; 4]) -> Option<RgbaImage> {
     let a = meta().anims.get(&sheet_key("idle", char_id))?;

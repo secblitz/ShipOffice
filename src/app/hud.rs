@@ -6,7 +6,7 @@ use super::icon::{icon, icon_turned, Icon};
 use super::popover::Popover;
 use super::overlay::Overlay;
 use super::style::{self, alpha, on, p, rgb8, MONO, UI_BOLD, UI_MEDIUM};
-use super::{App, HarnessChoice, Message, Page, Setting, WindowAction};
+use super::{App, Card, HarnessChoice, Message, Page, Setting, Sharing, WindowAction};
 use crate::office::gen::THEMES;
 use crate::office::world::SeatRef;
 use crate::render::paint::{fmt_k, fmt_t};
@@ -150,6 +150,10 @@ impl App {
             layers.push(self.view_office());
         }
         layers.push(overlay.into());
+        // the office alone while it is captured for the Locked in card
+        if matches!(self.sharing, Some(Sharing::Capturing(_) | Sharing::Shooting)) {
+            return stack(layers).width(Fill).height(Fill).into();
+        }
         layers.push(self.hud(cfg.feed_open));
         layers.extend(self.inspector());
         layers.extend(self.board_card());
@@ -158,6 +162,9 @@ impl App {
         }
         if self.settings_open {
             layers.push(self.settings());
+        }
+        if let Some(Sharing::Ready(c)) = &self.sharing {
+            layers.push(self.card_preview(c));
         }
         if cfg!(not(target_os = "macos")) {
             layers.push(resize_grips());
@@ -283,10 +290,36 @@ impl App {
             sep(),
             tool(Icon::Feed, "Live feed", Message::ToggleFeed, feed_open),
             tooltip(button(container(self.dice(16.0)).center(Fill)).width(32).height(32).padding(0).style(style::flat(false)).on_press(Message::NewLayout), container(t("New office for this session  N", 12.0, pal.text)).padding([5, 9]).style(style::surface(8.0)), tooltip::Position::Top).gap(8),
+            sep(),
+            tooltip(
+                button(row![icon(Icon::Bolt, 15.0, pal.accent), t("Locked in", 12.5, pal.text).font(UI_MEDIUM)].spacing(6).align_y(Alignment::Center)).padding([8, 11]).height(32).style(style::flat(false)).on_press(Message::LockedIn),
+                container(t("Share how locked in you are  L", 12.0, pal.text)).padding([5, 9]).style(style::surface(8.0)),
+                tooltip::Position::Top
+            )
+            .gap(8),
         ]
         .spacing(2)
         .align_y(Alignment::Center);
         container(r).padding(6).style(style::surface(14.0)).into()
+    }
+
+    /// The Locked in card, big, with what to do with it.
+    fn card_preview<'a>(&'a self, c: &'a Card) -> El<'a> {
+        let pal = p();
+        let e = self.enter("card");
+        let h = (self.stage.height - 150.0).clamp(240.0, 820.0);
+        let pic = iced::widget::image(c.handle.clone()).height(h).width(h * super::share::W as f32 / super::share::H as f32).border_radius(18.0);
+        let label = |s: &'a str, c: Color| t(s, 13.0, c).font(UI_MEDIUM);
+        let save = button(label(if c.saved.is_some() { "Saved" } else { "Save image" }, on(pal.accent))).padding([9, 16]).style(style::primary()).on_press(Message::SaveCard);
+        let copy = button(label(if c.copied { "Caption copied" } else { "Copy caption" }, pal.text)).padding([9, 16]).style(style::secondary()).on_press(Message::CopyCaption);
+        let close = button(label("Close", pal.muted)).padding([9, 14]).style(style::flat(false)).on_press(Message::CloseCard);
+        let mut actions = row![save, copy, close].spacing(8).align_y(Alignment::Center);
+        if let Some(path) = &c.saved {
+            actions = actions.push(Space::new().width(6)).push(button(t(format!("{}  ›", tidy_path(path)), 12.0, pal.muted)).padding([6, 8]).style(style::flat(false)).on_press(Message::ShowCardFolder));
+        }
+        let panel = column![pic, container(actions).padding([12, 14]).style(style::surface(14.0))].spacing(12).align_x(Alignment::Center);
+        let shade = mouse_area(container(Space::new()).width(Fill).height(Fill).style(move |_| container::Style { background: Some(iced::Background::Color(alpha(Color::BLACK, 0.62 * e))), ..Default::default() })).on_press(Message::CloseCard);
+        stack![shade, container(opaque(style::faded(e, || container(panel).padding(Padding { top: (1.0 - e) * 18.0, ..Padding::ZERO })))).center(Fill)].into()
     }
 
     fn crew_list(&self) -> El<'_> {

@@ -23,6 +23,8 @@ pub enum Icon {
     TurnRight,
     Reset,
     Dice,
+    /// a lightning bolt: Locked in
+    Bolt,
     Check,
     Chevron(bool),
 }
@@ -55,6 +57,18 @@ impl canvas::Program<Message> for Draw {
                 for (x, y) in [(0.36, 0.36), (0.64, 0.36), (0.5, 0.5), (0.36, 0.64), (0.64, 0.64)] {
                     f.fill(&Path::circle(p(x, y), s * 0.055), self.color);
                 }
+            }
+            Icon::Bolt => {
+                let bolt = Path::new(|b| {
+                    b.move_to(p(0.58, 0.12));
+                    b.line_to(p(0.26, 0.56));
+                    b.line_to(p(0.48, 0.56));
+                    b.line_to(p(0.4, 0.88));
+                    b.line_to(p(0.74, 0.43));
+                    b.line_to(p(0.52, 0.43));
+                    b.close();
+                });
+                f.fill(&bolt, self.color);
             }
             Icon::Check => {
                 line(&mut f, p(0.26, 0.52), p(0.43, 0.68));
