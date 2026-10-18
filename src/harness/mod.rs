@@ -3,6 +3,7 @@
 //! Adapters are passive. They only read files the harness already writes, never talk to the
 //! harness, and never write anywhere near its data.
 
+pub mod aider;
 pub mod amp;
 pub mod claude;
 pub mod cline;
@@ -68,6 +69,7 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
         Box::new(droid::Droid::default()),
         Box::new(cursor::Cursor::default()),
         Box::new(amp::Amp),
+        Box::new(aider::Aider),
     ]
 }
 
