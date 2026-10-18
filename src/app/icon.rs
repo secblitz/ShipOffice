@@ -18,6 +18,7 @@ pub enum Icon {
     Left,
     Right,
     Shuffle,
+    Feed,
     Chevron(bool),
 }
 
@@ -73,6 +74,13 @@ impl canvas::Program<Message> for Draw {
                 let x = 0.5 + 0.1 * d;
                 line(&mut f, p(x, 0.28), p(x - 0.2 * d, 0.5));
                 line(&mut f, p(x - 0.2 * d, 0.5), p(x, 0.72));
+            }
+            Icon::Feed => {
+                for (i, w) in [0.6f32, 0.45, 0.52].iter().enumerate() {
+                    let y = 0.3 + i as f32 * 0.2;
+                    f.fill(&Path::circle(p(0.24, y), s * 0.045), self.color);
+                    line(&mut f, p(0.36, y), p(0.36 + *w * 0.75, y));
+                }
             }
             Icon::Chevron(open) => {
                 if open {

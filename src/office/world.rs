@@ -166,6 +166,8 @@ pub struct Avatar {
     leaving: bool,
     idle_since: Option<f32>,
     reported: bool,
+    /// seconds before this avatar walks in; arrivals come through the door one by one
+    arrive_in: f32,
 }
 
 impl Avatar {
@@ -322,6 +324,7 @@ impl World {
             leaving: false,
             idle_since: Some(0.0),
             reported: false,
+            arrive_in: 0.0,
         };
         self.next_id += 1;
         if lead && !self.s.layout.desks.is_empty() {
@@ -357,6 +360,7 @@ impl World {
     /// Brings the avatars in line with the session: hires new agents, sends finished helpers
     /// to report, and replans anyone whose job changed.
     pub fn sync(&mut self, session: &Session) {
+        let mut arrivals = 0;
         for st in session.agents.values() {
             if !self.avatars.iter().any(|a| a.agent == st.id && !a.gone) {
                 let room = self.s.layout.desks.len() + 2;
@@ -365,6 +369,13 @@ impl World {
                     continue;
                 }
                 let i = self.hire(&st.id, &st.label, st.kind.clone());
+                if st.id != AgentRef::Lead {
+                    let queue = self.avatars.iter().filter(|a| a.arrive_in > 0.0).map(|a| a.arrive_in).fold(0.0, f32::max);
+                    let a = &mut self.avatars[i];
+                    a.arrive_in = if arrivals == 0 && queue == 0.0 { 0.01 } else { queue + 1.1 };
+                    a.alpha = 0.0;
+                    arrivals += 1;
+                }
                 if st.id != AgentRef::Lead {
                     self.avatars[i].say(BubbleKind::Say, format!("On it: {}", st.label), 3.0);
                 }
@@ -772,6 +783,13 @@ fn finish(a: &mut Avatar, s: &mut Shared, done: Done) {
 }
 
 fn update(a: &mut Avatar, s: &mut Shared, dt: f32, idle_count: usize, first_idle: Option<u32>, game_waiting: Option<u32>) {
+    if a.arrive_in > 0.0 {
+        a.arrive_in -= dt;
+        return;
+    }
+    if a.alpha < 1.0 && !a.leaving {
+        a.alpha = (a.alpha + dt * 3.0).min(1.0);
+    }
     a.t += dt;
     if let Some(b) = a.bubble.as_mut() {
         b.left -= dt;

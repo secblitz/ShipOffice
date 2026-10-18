@@ -28,8 +28,8 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 /// Room the floating bars take at the top and bottom of the stage.
-const PAD_TOP: f32 = 104.0;
-const PAD_BOTTOM: f32 = 96.0;
+const PAD_TOP: f32 = 108.0;
+const PAD_BOTTOM: f32 = 72.0;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -48,6 +48,7 @@ pub enum Message {
     Follow,
     CloseCards,
     ToggleFeed,
+    ToggleCrew,
     ToggleSettings,
     NewLayout,
     Key(keyboard::Event),
@@ -80,6 +81,12 @@ pub enum Setting {
     AddPath,
     RemovePath(String, usize),
     OpenConfigFolder,
+    Theme(String),
+    Accent(u32),
+    /// a colour role and the hex being typed for it
+    Color(String, String),
+    ResetColors,
+    OfficeStyle(Option<String>),
 }
 
 /// A harness as the settings list shows it.
@@ -128,8 +135,9 @@ pub struct App {
     pub selected: Option<u32>,
     pub follow: bool,
     pub board_open: bool,
-    pub feed_open: bool,
     pub settings_open: bool,
+    pub crew_open: bool,
+    pub color_drafts: HashMap<String, String>,
     pub harnesses: Vec<HarnessInfo>,
     pub path_input: String,
     pub path_harness: Option<HarnessChoice>,
@@ -173,7 +181,9 @@ pub fn run() -> iced::Result {
 
 impl App {
     fn boot() -> (Self, Task<Message>) {
-        let cfg = Arc::new(RwLock::new(Config::load()));
+        let loaded = Config::load();
+        style::apply(&loaded.appearance);
+        let cfg = Arc::new(RwLock::new(loaded));
         let rx = sources::spawn(cfg.clone());
         let harnesses = harness::all().iter().map(|a| HarnessInfo { id: a.id(), name: a.name(), roots: a.default_roots(), found: 0 }).collect::<Vec<_>>();
         let path_harness = harnesses.first().map(|h| HarnessChoice { id: h.id.into(), name: h.name.into() });
@@ -192,8 +202,9 @@ impl App {
             selected: None,
             follow: false,
             board_open: false,
-            feed_open: true,
             settings_open: false,
+            crew_open: false,
+            color_drafts: HashMap::new(),
             harnesses,
             path_input: String::new(),
             path_harness,
@@ -294,7 +305,13 @@ impl App {
                 self.board_open = false;
                 self.follow = false;
             }
-            Message::ToggleFeed => self.feed_open = !self.feed_open,
+            Message::ToggleFeed => {
+                if let Ok(mut c) = self.cfg.write() {
+                    c.feed_open = !c.feed_open;
+                    let _ = c.save();
+                }
+            }
+            Message::ToggleCrew => self.crew_open = !self.crew_open,
             Message::ToggleSettings => self.settings_open = !self.settings_open,
             Message::NewLayout => self.new_layout(),
             Message::Key(k) => return self.key(k),
@@ -460,7 +477,7 @@ impl App {
                 let seed = self.seed_for(s);
                 let uid = self.next_uid;
                 self.next_uid += 1;
-                let world = World::new(&s.project(), seed);
+                let world = self.world_for(&s.project(), seed);
                 self.tabs.push(Tab { key: s.key.clone(), world, uid, seed, static_layer: None, static_res: 0.0, building: false, board: None, board_stats: None });
             }
         }
@@ -470,6 +487,18 @@ impl App {
             self.selected = None;
             self.relayout(true);
         }
+    }
+
+    fn world_for(&self, project: &str, seed: u32) -> World {
+        Self::styled(World::new(project, seed), &self.config())
+    }
+
+    /// Applies a fixed office style from the settings, if one is picked.
+    fn styled(mut w: World, cfg: &Config) -> World {
+        if let Some(th) = cfg.appearance.office_style.as_ref().and_then(|n| crate::office::gen::THEMES.iter().find(|t| t.name == n.as_str())) {
+            w.s.layout.theme = *th;
+        }
+        w
     }
 
     fn new_layout(&mut self) {
@@ -483,8 +512,9 @@ impl App {
         }
         let uid = self.next_uid;
         self.next_uid += 1;
+        let world = self.world_for(&project, seed);
         if let Some(t) = self.tabs.get_mut(self.active) {
-            *t = Tab { key, world: World::new(&project, seed), uid, seed, static_layer: None, static_res: 0.0, building: false, board: None, board_stats: None };
+            *t = Tab { key, world, uid, seed, static_layer: None, static_res: 0.0, building: false, board: None, board_stats: None };
         }
         self.selected = None;
         self.relayout(true);
@@ -601,6 +631,7 @@ impl App {
 
     fn setting(&mut self, s: Setting) {
         let mut save = true;
+        let mut restyle = false;
         {
             let Ok(mut c) = self.cfg.write() else { return };
             match s {
@@ -640,6 +671,38 @@ impl App {
                         }
                     }
                 }
+                Setting::Theme(id) => {
+                    c.appearance.theme = id;
+                    c.appearance.colors.clear();
+                    self.color_drafts.clear();
+                }
+                Setting::Accent(a) => {
+                    c.appearance.colors.insert("accent".into(), format!("#{a:06x}"));
+                    self.color_drafts.remove("accent");
+                }
+                Setting::Color(role, v) => {
+                    // keep what is being typed; apply once it is a full colour
+                    match style::parse_hex(&v) {
+                        Some(col) => {
+                            c.appearance.colors.insert(role.clone(), style::to_hex(col));
+                            if v.trim().trim_start_matches('#').len() == 6 {
+                                self.color_drafts.remove(&role);
+                            }
+                        }
+                        None => {
+                            self.color_drafts.insert(role, v);
+                            save = false;
+                        }
+                    }
+                }
+                Setting::ResetColors => {
+                    c.appearance.colors.clear();
+                    self.color_drafts.clear();
+                }
+                Setting::OfficeStyle(v) => {
+                    c.appearance.office_style = v;
+                    restyle = true;
+                }
                 Setting::OpenConfigFolder => {
                     save = false;
                     if let Some(dir) = Config::path().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
@@ -651,6 +714,12 @@ impl App {
             if save {
                 let _ = c.save();
             }
+            style::apply(&c.appearance);
+        }
+        if restyle {
+            // offices repaint in the new style; their crews arrive again from the sessions
+            self.tabs.clear();
+            self.relayout(true);
         }
         self.last_second = Instant::now() - Duration::from_secs(2);
     }
@@ -724,10 +793,3 @@ impl shader::Program<Message> for OfficeShader<'_> {
         gpu::Primitive { list: self.scene.list.clone(), scale: self.cam.scale(), origin: self.cam.origin() }
     }
 }
-
-/// Labels the HUD uses for counts of agents in a world.
-pub fn crew_count(w: &World) -> usize {
-    w.avatars.len()
-}
-
-pub type Colors = HashMap<String, iced::Color>;

@@ -22,6 +22,27 @@ pub struct Config {
     pub harness: BTreeMap<String, HarnessConfig>,
     /// Pin a project's office layout: project folder name -> layout seed.
     pub layouts: BTreeMap<String, u32>,
+    pub appearance: Appearance,
+    /// The live feed panel is open.
+    pub feed_open: bool,
+}
+
+/// How the HUD looks: a preset, plus any colours you changed on top of it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Appearance {
+    /// Preset id (`graphite`, `paper`, `midnight`...).
+    pub theme: String,
+    /// Colour overrides as `#rrggbb`, keyed by role (`accent`, `surface`, `text`...).
+    pub colors: BTreeMap<String, String>,
+    /// Use one office style for every project instead of a procedural one (theme name).
+    pub office_style: Option<String>,
+}
+
+impl Default for Appearance {
+    fn default() -> Self {
+        Self { theme: "graphite".into(), colors: BTreeMap::new(), office_style: None }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -51,6 +72,8 @@ impl Default for Config {
             show_fps: false,
             harness: BTreeMap::new(),
             layouts: BTreeMap::new(),
+            appearance: Appearance::default(),
+            feed_open: false,
         }
     }
 }

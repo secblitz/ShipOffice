@@ -2,7 +2,7 @@
 //! pointer (hover, click, drag to pan, wheel to zoom). Text stays a readable size: it grows a
 //! little with zoom, never with the room.
 
-use super::style::{self, MONO, UI, UI_BOLD};
+use super::style::{self, p, MONO, UI, UI_BOLD};
 use super::Message;
 use crate::office::iso;
 use crate::office::world::{BubbleKind, GameState, World};
@@ -121,22 +121,39 @@ impl canvas::Program<Message> for Overlay<'_> {
             Some(Hit::Agent(id)) => Some(id),
             _ => None,
         };
+        // bubbles nearest the viewer keep their place; ones behind them rise until they clear
+        let mut items: Vec<(f32, f32, &crate::office::world::Avatar, &crate::office::world::Bubble)> = Vec::new();
         for h in &self.scene.heads {
-            let Some(a) = world.avatar(h.id) else { continue };
+            let Some(a) = world.avatar(h.id).filter(|a| a.alpha > 0.3) else { continue };
             let (sx, sy) = self.cam.to_screen(h.x, h.y);
-            if let Some(b) = a.bubble.as_ref().filter(|_| self.bubbles) {
-                let fade = (b.left / 0.35).min((b.dur - b.left) / 0.2 + 0.2).clamp(0.0, 1.0);
-                bubble(&mut f, b.kind, &b.text, style::rgb8(a.color()), sx, sy, ub, fade);
-            } else if Some(a.id) == tag || Some(a.id) == self.selected {
-                name_tag(&mut f, &a.name, style::rgb8(a.color()), sx, sy, ub);
+            match a.bubble.as_ref().filter(|_| self.bubbles) {
+                Some(b) => items.push((sx, sy, a, b)),
+                None if Some(a.id) == tag || Some(a.id) == self.selected => name_tag(&mut f, &a.name, style::rgb8(a.color()), sx, sy, ub),
+                None => {}
             }
+        }
+        items.sort_by(|p, q| q.1.total_cmp(&p.1));
+        let mut placed: Vec<Rectangle> = Vec::new();
+        for (sx, sy, a, b) in items {
+            let (w, h) = bubble_size(b.kind, &b.text, ub);
+            let mut lift = 0.0;
+            for _ in 0..8 {
+                let r = Rectangle::new(Point::new(sx - w / 2.0, sy - h - lift), Size::new(w, h));
+                match placed.iter().find(|q| q.intersects(&r)) {
+                    Some(q) => lift = sy - h - q.y + 3.0,
+                    None => break,
+                }
+            }
+            placed.push(Rectangle::new(Point::new(sx - w / 2.0, sy - h - lift), Size::new(w, h)));
+            let fade = (b.left / 0.35).min((b.dur - b.left) / 0.2 + 0.2).clamp(0.0, 1.0);
+            bubble(&mut f, b.kind, &b.text, style::rgb8(a.color()), sx, sy, lift, ub, fade);
         }
         if let Some(g) = world.s.game.as_ref().filter(|g| g.state == GameState::Playing) {
             let t = &world.s.layout.props[world.s.layout.lounge.pp_table];
             let (wx, wy) = iso(t.x as f32 + 1.0, t.y as f32 + 0.5);
             let (sx, sy) = self.cam.to_screen(wx, wy);
-            let ca = world.avatar(g.a).map(|a| style::rgb8(a.color())).unwrap_or(style::MUTED);
-            let cb = g.b.and_then(|b| world.avatar(b)).map(|a| style::rgb8(a.color())).unwrap_or(style::MUTED);
+            let ca = world.avatar(g.a).map(|a| style::rgb8(a.color())).unwrap_or(p().muted);
+            let cb = g.b.and_then(|b| world.avatar(b)).map(|a| style::rgb8(a.color())).unwrap_or(p().muted);
             score(&mut f, g.score, ca, cb, sx, sy - 66.0 * self.cam.scale(), ub);
         }
         vec![f.into_geometry()]
@@ -201,16 +218,38 @@ fn rounded(x: f32, y: f32, w: f32, h: f32, r: f32) -> Path {
     Path::rounded_rectangle(Point::new(x, y), Size::new(w, h), r.into())
 }
 
+fn tool_text(text: &str) -> String {
+    if text.chars().count() > 34 {
+        text.chars().take(33).chain(['…']).collect()
+    } else {
+        text.to_owned()
+    }
+}
+
+/// Screen size of a bubble including its tail.
+fn bubble_size(kind: BubbleKind, text: &str, k: f32) -> (f32, f32) {
+    if kind == BubbleKind::Tool {
+        return (measure(&tool_text(text), 9.0 * k, MONO) + 12.0 * k, 17.0 * k);
+    }
+    let size = 10.5 * k;
+    let lines = wrap(text, size, 128.0 * k);
+    let w = lines.iter().map(|l| measure(l, size, UI)).fold(0.0, f32::max) + 16.0 * k;
+    (w, (lines.len() as f32 * 13.0 + 9.0) * k + 10.0 * k)
+}
+
+/// `lift` raises the bubble body above its natural spot; the tail still points at the head.
 #[allow(clippy::too_many_arguments)]
-fn bubble(f: &mut Frame, kind: BubbleKind, text: &str, accent: Color, x: f32, y: f32, k: f32, fade: f32) {
+fn bubble(f: &mut Frame, kind: BubbleKind, text: &str, accent: Color, x: f32, y0: f32, lift: f32, k: f32, fade: f32) {
     let a = |c: Color, m: f32| Color { a: c.a * m * fade, ..c };
+    let y = y0 - lift;
     if kind == BubbleKind::Tool {
         let size = 9.0 * k;
-        let t: String = if text.chars().count() > 34 { text.chars().take(33).chain(['…']).collect() } else { text.to_owned() };
+        let t = tool_text(text);
         let w = measure(&t, size, MONO) + 12.0 * k;
-        f.fill(&rounded(x - w / 2.0, y - 16.0 * k, w, 15.0 * k, 7.0 * k), a(Color::from_rgba8(20, 26, 38, 0.92), 1.0));
+        let pal = p();
+        f.fill(&rounded(x - w / 2.0, y - 16.0 * k, w, 15.0 * k, 7.0 * k), a(style::alpha(pal.surface, 0.95), 1.0));
         f.fill_rectangle(Point::new(x - w / 2.0 + 4.0 * k, y - 11.0 * k), Size::new(3.0 * k, 5.0 * k), a(accent, 1.0));
-        label(f, &t, x - w / 2.0 + 9.0 * k, y - 5.5 * k, size, a(style::CREAM, 1.0), MONO);
+        label(f, &t, x - w / 2.0 + 9.0 * k, y - 5.5 * k, size, a(pal.text, 1.0), MONO);
         return;
     }
     let size = 10.5 * k;
@@ -229,7 +268,7 @@ fn bubble(f: &mut Frame, kind: BubbleKind, text: &str, accent: Color, x: f32, y:
     } else {
         let tail = Path::new(|p| {
             p.move_to(Point::new(x - 5.0 * k, by + h - 1.0));
-            p.line_to(Point::new(x, y - 3.0 * k));
+            p.line_to(Point::new(x, y0 - 3.0 * k));
             p.line_to(Point::new(x + 4.0 * k, by + h - 1.0));
             p.close();
         });
@@ -244,19 +283,21 @@ fn name_tag(f: &mut Frame, name: &str, accent: Color, x: f32, y: f32, k: f32) {
     let size = 9.5 * k;
     let name: String = if name.chars().count() > 30 { name.chars().take(29).chain(['…']).collect() } else { name.to_owned() };
     let w = measure(&name, size, UI_BOLD) + 14.0 * k;
-    f.fill(&rounded(x - w / 2.0, y - 17.0 * k, w, 14.0 * k, 7.0 * k), Color::from_rgba8(20, 26, 38, 0.9));
+    let pal = p();
+    f.fill(&rounded(x - w / 2.0, y - 17.0 * k, w, 14.0 * k, 7.0 * k), style::alpha(pal.surface, 0.95));
     f.fill(&Path::circle(Point::new(x - w / 2.0 + 6.0 * k, y - 10.0 * k), 2.2 * k), accent);
-    label(f, &name, x - w / 2.0 + 10.0 * k, y - 6.5 * k, size, style::CREAM, UI_BOLD);
+    label(f, &name, x - w / 2.0 + 10.0 * k, y - 6.5 * k, size, pal.text, UI_BOLD);
 }
 
 fn score(f: &mut Frame, s: [u32; 2], ca: Color, cb: Color, x: f32, y: f32, k: f32) {
     let size = 9.0 * k;
     let t = format!("{} – {}", s[0], s[1]);
     let w = measure(&t, size, MONO) + 18.0 * k;
-    f.fill(&rounded(x - w / 2.0, y, w, 14.0 * k, 7.0 * k), Color::from_rgba8(20, 26, 38, 0.85));
+    let pal = p();
+    f.fill(&rounded(x - w / 2.0, y, w, 14.0 * k, 7.0 * k), style::alpha(pal.surface, 0.95));
     f.fill_rectangle(Point::new(x - w / 2.0 + 4.0 * k, y + 5.0 * k), Size::new(3.0 * k, 4.0 * k), ca);
     f.fill_rectangle(Point::new(x + w / 2.0 - 7.0 * k, y + 5.0 * k), Size::new(3.0 * k, 4.0 * k), cb);
-    label(f, &t, x - w / 2.0 + 9.0 * k, y + 10.0 * k, size, style::CREAM, MONO);
+    label(f, &t, x - w / 2.0 + 9.0 * k, y + 10.0 * k, size, pal.text, MONO);
 }
 
 /// Screen offset helper for cards that hang off a world point.
