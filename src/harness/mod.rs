@@ -4,6 +4,7 @@
 //! harness, and never write anywhere near its data.
 
 pub mod claude;
+pub mod cline;
 pub mod codex;
 pub mod copilot;
 pub mod gemini;
@@ -55,6 +56,8 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
         Box::new(gemini::GeminiCli::default()),
         Box::new(qwen::QwenCode),
         Box::new(copilot::CopilotCli),
+        Box::new(cline::Cline::cline()),
+        Box::new(cline::Cline::roo()),
     ]
 }
 
