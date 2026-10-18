@@ -8,3 +8,4 @@
 /assets/desk_ai.png
 __pycache__/
 .DS_Store
+/.claude/
