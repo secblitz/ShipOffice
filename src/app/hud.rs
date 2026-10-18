@@ -2,16 +2,17 @@
 //! left, settings and window controls top right, a single toolbar bottom centre. The crew list,
 //! the live feed and the cards open on demand.
 
-use super::icon::{icon, Icon};
+use super::icon::{icon, icon_turned, Icon};
+use super::popover::Popover;
 use super::overlay::Overlay;
 use super::style::{self, alpha, on, p, rgb8, MONO, UI_BOLD, UI_MEDIUM};
-use super::{App, HarnessChoice, Message, Setting, WindowAction};
+use super::{App, HarnessChoice, Message, Page, Setting, WindowAction};
 use crate::office::gen::THEMES;
 use crate::office::world::SeatRef;
 use crate::render::paint::{fmt_k, fmt_t};
 use crate::render::scene::Hit;
 use crate::session::{Session, Status};
-use iced::widget::{button, canvas, column, container, mouse_area, opaque, pick_list, pin, row, scrollable, slider, stack, text, text_input, toggler, tooltip, Space};
+use iced::widget::{button, canvas, column, container, mouse_area, opaque, pin, row, scrollable, stack, text, text_input, toggler, tooltip, Space};
 use iced::{mouse, window, Alignment, Color, Element, Fill, Length, Padding};
 use std::time::SystemTime;
 
@@ -104,6 +105,12 @@ impl App {
         self.opened.get(key).map_or(1.0, |t| style::entrance(*t, 0.22))
     }
 
+    /// The dice icon; it spins for a moment after a roll.
+    fn dice(&self, size: f32) -> El<'static> {
+        let k = self.rolled.map_or(1.0, |t| style::entrance(t, 0.5));
+        icon_turned(Icon::Dice, size, p().muted, k * std::f32::consts::PI)
+    }
+
     /// A status dot; a working one breathes.
     fn status_dot(&self, s: Status, d: f32) -> El<'static> {
         let c = status_color(s);
@@ -189,8 +196,13 @@ impl App {
             let status = s.map_or(Status::Idle, |s| s.status);
             let name = s.map_or_else(|| "…".into(), |s| s.project());
             let sel = i == self.active;
-            let body = row![self.status_dot(status, 7.0), t(clip(&name, 22), 13.0, if sel { pal.text } else { pal.muted }).font(if sel { UI_BOLD } else { UI_MEDIUM })].spacing(8).align_y(Alignment::Center);
-            button(body).padding([7, 12]).style(style::flat(sel)).on_press(Message::SelectTab(i)).into()
+            let mut body = row![self.status_dot(status, 7.0), t(clip(&name, 22), 13.0, if sel { pal.text } else { pal.muted }).font(if sel { UI_BOLD } else { UI_MEDIUM })].spacing(8).align_y(Alignment::Center);
+            if sel {
+                // the active office can be rolled again, right where its name is
+                let dice = button(self.dice(13.0)).padding(3).style(style::flat(false)).on_press(Message::NewLayout);
+                body = body.push(tooltip(dice, container(t("New office for this session  N", 12.0, pal.text)).padding([5, 9]).style(style::surface(8.0)), tooltip::Position::Bottom).gap(8));
+            }
+            button(body).padding(if sel { Padding { top: 4.0, bottom: 4.0, left: 12.0, right: 5.0 } } else { Padding::from([7, 12]) }).style(style::flat(sel)).on_press(Message::SelectTab(i)).into()
         }))
         .spacing(2);
         r = r.push(scrollable(tabs).direction(no_scrollbar()).style(style::hidden_scroll));
@@ -250,7 +262,7 @@ impl App {
             crew_btn,
             tool(Icon::Follow, "Follow the selected agent  F", Message::Follow, self.follow),
             sep(),
-            tool(Icon::TurnLeft, "Turn left  Q · right-drag to orbit", Message::Turn(std::f32::consts::FRAC_PI_2), false),
+            tool(Icon::TurnLeft, "Turn left  Q · drag to turn and tilt", Message::Turn(std::f32::consts::FRAC_PI_2), false),
             tool(Icon::TurnRight, "Turn right  E", Message::Turn(-std::f32::consts::FRAC_PI_2), false),
         ]
         .spacing(2)
@@ -260,7 +272,7 @@ impl App {
             r,
             sep(),
             tool(Icon::Feed, "Live feed", Message::ToggleFeed, feed_open),
-            tool(Icon::Shuffle, "New office layout", Message::NewLayout, false),
+            tooltip(button(container(self.dice(16.0)).center(Fill)).width(32).height(32).padding(0).style(style::flat(false)).on_press(Message::NewLayout), container(t("New office for this session  N", 12.0, pal.text)).padding([5, 9]).style(style::surface(8.0)), tooltip::Position::Top).gap(8),
         ]
         .spacing(2)
         .align_y(Alignment::Center);
@@ -460,137 +472,219 @@ impl App {
     fn settings_sheet(&self, e: f32) -> El<'_> {
         let pal = p();
         let cfg = self.config();
-        let section = |s: &'static str| -> El<'static> { container(t(s, 12.0, pal.muted).font(UI_BOLD)).padding(Padding { top: 8.0, ..Padding::ZERO }).into() };
-        let mut c = column![row![t("Settings", 17.0, pal.text).font(UI_BOLD), Space::new().width(Fill), small_x(Message::ToggleSettings)].align_y(Alignment::Center)].spacing(12);
-
-        // appearance: presets as cards, then accent swatches, then every colour by hand
-        c = c.push(section("Appearance"));
-        let cards: Vec<El> = style::PRESETS
-            .iter()
-            .map(|pr| -> El {
-                let q = pr.pal;
-                let sample = container(column![t("Aa", 15.0, q.text).font(UI_BOLD), row![dot(q.accent, 7.0), dot(q.working, 7.0), dot(q.waiting, 7.0)].spacing(3)].spacing(4))
-                    .padding([8, 10])
-                    .width(Fill)
-                    .style(move |_| container::Style { background: Some(iced::Background::Color(q.surface)), border: iced::border::rounded(8), ..Default::default() });
-                let sel = cfg.appearance.theme == pr.id;
-                button(column![sample, t(pr.name, 11.5, if sel { pal.text } else { pal.muted }).font(UI_MEDIUM)].spacing(5).width(Fill))
-                    .padding(4)
-                    .width(Fill)
-                    .style(style::preset_card(sel))
-                    .on_press(Message::Setting(Setting::Theme(pr.id.into())))
-                    .into()
-            })
-            .collect();
-        let mut grid = column![].spacing(4);
-        let mut it = cards.into_iter();
-        loop {
-            let r: Vec<El> = it.by_ref().take(4).collect();
-            if r.is_empty() {
-                break;
-            }
-            grid = grid.push(row(r).spacing(4));
-        }
-        c = c.push(grid);
-        let accents = row(style::ACCENTS.iter().map(|&a| -> El {
-            let col = Color::from_rgb8((a >> 16) as u8, (a >> 8) as u8, a as u8);
-            let sel = style::to_hex(pal.accent) == style::to_hex(col);
-            button(Space::new().width(22).height(22))
-                .padding(0)
-                .style(move |_, _| button::Style { background: Some(iced::Background::Color(col)), border: iced::Border { color: if sel { pal.text } else { Color::TRANSPARENT }, width: 2.0, radius: 999.0.into() }, ..Default::default() })
-                .on_press(Message::Setting(Setting::Accent(a)))
-                .into()
+        let header = row![t("Settings", 17.0, pal.text).font(UI_BOLD), Space::new().width(Fill), small_x(Message::ToggleSettings)].align_y(Alignment::Center);
+        let pages = row([(Page::Look, "Look"), (Page::Sources, "Sources"), (Page::Office, "Office")].into_iter().map(|(pg, label)| -> El {
+            let sel = self.page == pg;
+            button(t(label, 12.5, if sel { pal.text } else { pal.muted }).font(if sel { UI_BOLD } else { UI_MEDIUM }).width(Fill).align_x(Alignment::Center)).width(Fill).padding([6, 0]).style(style::flat(sel)).on_press(Message::SettingsPage(pg)).into()
         }))
-        .spacing(8);
-        c = c.push(row![t("Accent", 12.5, pal.text).width(Fill), accents].align_y(Alignment::Center));
-        let colors = column(style::ROLES.iter().map(|&(key, label)| -> El {
-            let cur = style::role(&pal, key);
-            let draft = self.color_drafts.get(key).cloned().unwrap_or_else(|| style::to_hex(cur));
-            let k = key.to_owned();
-            row![
-                container(Space::new()).width(20).height(20).style(style::ring(cur, false)),
-                t(label, 12.5, pal.text).width(Fill),
-                text_input("#rrggbb", &draft).on_input(move |v| Message::Setting(Setting::Color(k.clone(), v))).font(MONO).size(12).padding([5, 8]).width(96).style(style::input),
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center)
-            .into()
-        }))
-        .spacing(6);
-        c = c.push(colors);
-        let mut office_styles = vec!["Procedural".to_owned()];
-        office_styles.extend(THEMES.iter().map(|th| th.name.to_owned()));
-        let current = cfg.appearance.office_style.clone().unwrap_or_else(|| "Procedural".into());
-        c = c.push(
-            row![
-                t("Office style", 12.5, pal.text).width(Fill),
-                pick_list(office_styles, Some(current), |v: String| Message::Setting(Setting::OfficeStyle(if v == "Procedural" { None } else { Some(v) }))).text_size(12).padding([5, 10]).style(style::select).menu_style(style::menu),
-            ]
-            .align_y(Alignment::Center),
-        );
-        if !cfg.appearance.colors.is_empty() {
-            c = c.push(button(t("Reset colours to the preset", 12.0, pal.text).font(UI_MEDIUM)).padding([6, 12]).style(style::secondary()).on_press(Message::Setting(Setting::ResetColors)));
-        }
-
-        c = c.push(section("Sources"));
-        for h in &self.harnesses {
-            let hc = cfg.harness(h.id);
-            let id = h.id.to_owned();
-            let found = if h.found > 0 { format!("{} live", h.found) } else { String::new() };
-            let mut hcol = column![row![t(h.name, 12.5, pal.text).width(Fill), mono(found, 11.0, pal.working), toggler(hc.enabled).on_toggle(move |v| Message::Setting(Setting::Harness(id.clone(), v))).size(18).style(style::toggle)].spacing(10).align_y(Alignment::Center)].spacing(3);
-            for (i, path) in hc.extra_paths.iter().enumerate() {
-                let id = h.id.to_owned();
-                hcol = hcol.push(row![mono(clip(&tidy_path(path), 44), 11.0, pal.muted).width(Fill), small_x(Message::Setting(Setting::RemovePath(id, i)))].align_y(Alignment::Center));
-            }
-            c = c.push(hcol);
-        }
-        let choices: Vec<HarnessChoice> = self.harnesses.iter().map(|h| HarnessChoice { id: h.id.into(), name: h.name.into() }).collect();
-        c = c.push(
-            column![
-                t("Watch another folder", 12.5, pal.text),
-                row![
-                    pick_list(choices, self.path_harness.clone(), |h| Message::Setting(Setting::PathHarness(h))).text_size(12).padding([5, 8]).width(124).style(style::select).menu_style(style::menu),
-                    text_input("~/path/to/sessions", &self.path_input).on_input(|s| Message::Setting(Setting::PathInput(s))).on_submit(Message::Setting(Setting::AddPath)).size(12).padding([5, 8]).style(style::input).font(MONO),
-                    button(t("Add", 12.0, on(pal.accent)).font(UI_MEDIUM)).padding([5, 12]).style(style::primary()).on_press(Message::Setting(Setting::AddPath)),
-                ]
-                .spacing(6)
-                .align_y(Alignment::Center)
-            ]
-            .spacing(6),
-        );
-
-        c = c.push(section("Office"));
-        let switch = |label: &'static str, v: bool, f: fn(bool) -> Setting| -> El<'static> { row![t(label, 12.5, pal.text).width(Fill), toggler(v).on_toggle(move |x| Message::Setting(f(x))).size(18).style(style::toggle)].align_y(Alignment::Center).into() };
-        c = c.push(switch("Speech bubbles", cfg.bubbles, Setting::Bubbles));
-        c = c.push(switch("Demo crew when nothing is live", cfg.demo_when_empty, Setting::Demo));
-        c = c.push(switch("Show frame rate", cfg.show_fps, Setting::ShowFps));
-        let fps = row([12u32, 16, 24].into_iter().map(|v| -> El { button(mono(format!("{v}"), 11.5, if cfg.anim_fps == v { pal.text } else { pal.muted })).padding([5, 10]).style(style::flat(cfg.anim_fps == v)).on_press(Message::Setting(Setting::AnimFps(v))).into() })).spacing(2);
-        c = c.push(row![t("Animation frames per second", 12.5, pal.text).width(Fill), container(fps).padding(2).style(style::inset())].align_y(Alignment::Center));
-        c = c.push(
-            column![
-                row![t("Sessions active in the last", 12.5, pal.text).width(Fill), mono(format!("{} min", cfg.active_minutes), 12.0, pal.text)],
-                slider(5.0..=240.0, cfg.active_minutes as f64, |v| Message::Setting(Setting::ActiveMinutes(v.round() as u64))).step(5.0).style(style::range)
-            ]
-            .spacing(8),
-        );
-        c = c.push(
-            column![
-                row![t("Most tabs at once", 12.5, pal.text).width(Fill), mono(format!("{}", cfg.max_tabs), 12.0, pal.text)],
-                slider(1.0..=12.0, cfg.max_tabs as f64, |v| Message::Setting(Setting::MaxTabs(v.round() as usize))).step(1.0).style(style::range)
-            ]
-            .spacing(8),
-        );
-
-        c = c.push(section("Shortcuts"));
-        let keys = [("1–9", "Switch tab"), ("Tab", "Next agent"), ("F", "Follow"), ("+  −  0", "Zoom, fit"), ("Esc", "Close")];
-        c = c.push(column(keys.iter().map(|(k, v)| -> El { row![t(*v, 12.0, pal.muted).width(Fill), container(mono(*k, 11.0, pal.text)).padding([2, 7]).style(style::inset())].align_y(Alignment::Center).into() })).spacing(5));
-        let path = crate::config::Config::path().map(|p| tidy_path(&p)).unwrap_or_default();
-        c = c.push(row![mono(clip(&path, 38), 11.0, pal.muted).width(Fill), button(t("Open folder", 12.0, pal.text).font(UI_MEDIUM)).padding([5, 12]).style(style::secondary()).on_press(Message::Setting(Setting::OpenConfigFolder))].align_y(Alignment::Center));
-
-        let panel = container(scrollable(container(c).padding(Padding { right: 12.0, ..Padding::ZERO })).style(style::thin_scroll)).padding(18).width(400).max_height((self.stage.height - 76.0).max(200.0)).style(style::card());
+        .spacing(2);
+        let body = match self.page {
+            Page::Look => self.page_look(&cfg),
+            Page::Sources => self.page_sources(&cfg),
+            Page::Office => self.page_office(&cfg),
+        };
+        let c = column![header, container(pages).padding(3).style(style::inset()), scrollable(container(body).padding(Padding { right: 10.0, bottom: 4.0, ..Padding::ZERO })).style(style::thin_scroll).height(Length::Shrink)].spacing(14);
+        let panel = container(c).padding(18).width(392).max_height((self.stage.height - 76.0).max(200.0)).style(style::card());
         let shade = mouse_area(container(Space::new()).width(Fill).height(Fill).style(move |_| container::Style { background: Some(iced::Background::Color(alpha(Color::BLACK, if pal.light { 0.12 } else { 0.3 }))), ..Default::default() })).on_press(Message::ToggleSettings);
         stack![shade, container(opaque(panel)).align_right(Fill).padding(Padding { top: 62.0, right: 12.0 - (1.0 - e) * 24.0, bottom: 12.0, left: 12.0 })].into()
     }
+
+    /// A dropdown: the trigger shows the current choice, the menu floats over everything.
+    fn dropdown<'a>(&self, id: &'static str, current: El<'a>, options: Vec<(El<'a>, Message, bool)>, width: f32) -> El<'a> {
+        let pal = p();
+        let open = self.menu == Some(id);
+        let trigger = button(row![current, Space::new().width(Fill), icon(Icon::Chevron(!open), 14.0, pal.muted)].spacing(8).align_y(Alignment::Center))
+            .padding([6, 10])
+            .width(width)
+            .style(style::trigger(open))
+            .on_press(Message::Menu(if open { None } else { Some(id) }));
+        let menu = style::faded(self.enter("menu"), || {
+            let items = column(options.into_iter().map(|(content, msg, sel)| -> El {
+                let mark: El = if sel { icon(Icon::Check, 14.0, pal.accent) } else { Space::new().width(14).into() };
+                button(row![content, Space::new().width(Fill), mark].spacing(8).align_y(Alignment::Center)).width(Fill).padding([7, 10]).style(style::menu_item(sel)).on_press(msg).into()
+            }))
+            .spacing(2);
+            container(scrollable(items).style(style::thin_scroll)).padding(5).max_height(300).style(style::menu_panel())
+        });
+        Popover::new(trigger, menu, open, Message::Menu(None)).width(width.max(200.0)).into()
+    }
+
+    fn page_look(&self, cfg: &crate::config::Config) -> El<'_> {
+        let pal = p();
+        let preset = style::preset(&cfg.appearance.theme);
+        let theme_opts = style::PRESETS.iter().map(|pr| (row![chip(pr.pal), t(pr.name, 12.5, pal.text)].spacing(10).align_y(Alignment::Center).into(), Message::Setting(Setting::Theme(pr.id.into())), pr.id == preset.id)).collect();
+        let theme = self.dropdown("theme", row![chip(preset.pal), t(preset.name, 12.5, pal.text).font(UI_MEDIUM)].spacing(10).align_y(Alignment::Center).into(), theme_opts, 180.0);
+        let accents = row(style::ACCENTS.iter().map(|&a| -> El {
+            let col = Color::from_rgb8((a >> 16) as u8, (a >> 8) as u8, a as u8);
+            let sel = style::to_hex(pal.accent) == style::to_hex(col);
+            button(Space::new().width(18).height(18))
+                .padding(0)
+                .style(move |_, st| button::Style { background: Some(iced::Background::Color(col)), border: iced::Border { color: if sel { pal.text } else if matches!(st, button::Status::Hovered) { alpha(pal.text, 0.4) } else { Color::TRANSPARENT }, width: 2.0, radius: 999.0.into() }, ..Default::default() })
+                .on_press(Message::Setting(Setting::Accent(a)))
+                .into()
+        }))
+        .spacing(6);
+        let style_name = cfg.appearance.office_style.clone();
+        let mut office_opts: Vec<(El, Message, bool)> = vec![(column![t("Procedural", 12.5, pal.text), t("Every project its own", 11.0, pal.muted)].spacing(1).into(), Message::Setting(Setting::OfficeStyle(None)), style_name.is_none())];
+        office_opts.extend(THEMES.iter().map(|th| -> (El, Message, bool) { (row![room_chip(th), t(th.name, 12.5, pal.text)].spacing(10).align_y(Alignment::Center).into(), Message::Setting(Setting::OfficeStyle(Some(th.name.into()))), style_name.as_deref() == Some(th.name)) }));
+        let current: El = match style_name.as_deref().and_then(|n| THEMES.iter().find(|th| th.name == n)) {
+            Some(th) => row![room_chip(th), t(th.name, 12.5, pal.text).font(UI_MEDIUM)].spacing(10).align_y(Alignment::Center).into(),
+            None => t("Procedural", 12.5, pal.text).font(UI_MEDIUM).into(),
+        };
+        let office = self.dropdown("office", current, office_opts, 180.0);
+        let mut c = column![group("Theme", vec![item("Theme", None, theme), item("Accent", None, accents.into()), item("Office style", None, office)])].spacing(18);
+
+        // hand-picked colours stay folded away until asked for
+        let n = cfg.appearance.colors.len();
+        let summary = if n == 0 { "From the theme".to_owned() } else { format!("{n} changed") };
+        let fold = button(row![t("Custom colours", 12.5, pal.text).width(Fill), t(summary, 11.5, pal.muted), icon(Icon::Chevron(!self.colors_open), 14.0, pal.muted)].spacing(8).align_y(Alignment::Center)).width(Fill).padding([10, 12]).style(style::flat(false)).on_press(Message::ToggleColors);
+        let mut rows: Vec<El> = vec![fold.into()];
+        if self.colors_open {
+            for &(key, label) in style::ROLES.iter() {
+                let cur = style::role(&pal, key);
+                let draft = self.color_drafts.get(key).cloned().unwrap_or_else(|| style::to_hex(cur));
+                let k = key.to_owned();
+                rows.push(
+                    row![
+                        container(Space::new()).width(18).height(18).style(style::ring(cur, false)),
+                        t(label, 12.5, pal.text).width(Fill),
+                        text_input("#rrggbb", &draft).on_input(move |v| Message::Setting(Setting::Color(k.clone(), v))).font(MONO).size(12).padding([5, 8]).width(92).style(style::input),
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center)
+                    .padding([6, 12])
+                    .into(),
+                );
+            }
+            if n > 0 {
+                rows.push(container(button(t("Reset to the theme", 12.0, pal.text).font(UI_MEDIUM)).padding([6, 12]).style(style::secondary()).on_press(Message::Setting(Setting::ResetColors))).padding([8, 12]).into());
+            }
+        }
+        c = c.push(group_raw("Colours", rows));
+        c.into()
+    }
+
+    fn page_sources(&self, cfg: &crate::config::Config) -> El<'_> {
+        let pal = p();
+        // live harnesses first, then the ones you switched on, then the rest
+        let mut hs: Vec<_> = self.harnesses.iter().collect();
+        hs.sort_by_key(|h| (h.found == 0, !cfg.harness(h.id).enabled));
+        let rows = hs
+            .into_iter()
+            .map(|h| -> El {
+                let hc = cfg.harness(h.id);
+                let id = h.id.to_owned();
+                let (sub, sub_c) = if h.found > 0 { (format!("{} live", h.found), pal.working) } else if hc.enabled { ("Watching".to_owned(), pal.muted) } else { ("Off".to_owned(), pal.muted) };
+                let mut col = column![row![column![t(h.name, 12.5, pal.text), t(sub, 11.0, sub_c)].spacing(1).width(Fill), toggler(hc.enabled).on_toggle(move |v| Message::Setting(Setting::Harness(id.clone(), v))).size(18).style(style::toggle)].align_y(Alignment::Center)].spacing(4);
+                for (i, path) in hc.extra_paths.iter().enumerate() {
+                    let id = h.id.to_owned();
+                    col = col.push(row![mono(clip(&tidy_path(path), 40), 11.0, pal.muted).width(Fill), small_x(Message::Setting(Setting::RemovePath(id, i)))].align_y(Alignment::Center));
+                }
+                container(col).padding([9, 12]).into()
+            })
+            .collect();
+        let pick = self.path_harness.clone();
+        let opts = self.harnesses.iter().map(|h| -> (El, Message, bool) { (t(h.name, 12.5, pal.text).into(), Message::Setting(Setting::PathHarness(HarnessChoice { id: h.id.into(), name: h.name.into() })), pick.as_ref().is_some_and(|p| p.id == h.id)) }).collect();
+        let current: El = match &pick {
+            Some(h) => t(h.name.clone(), 12.5, pal.text).font(UI_MEDIUM).into(),
+            None => t("Choose a harness", 12.5, pal.muted).into(),
+        };
+        let add = column![
+            item("Harness", None, self.dropdown("harness", current, opts, 180.0)),
+            row![
+                text_input("~/path/to/sessions", &self.path_input).on_input(|s| Message::Setting(Setting::PathInput(s))).on_submit(Message::Setting(Setting::AddPath)).size(12).padding([6, 9]).style(style::input).font(MONO),
+                button(t("Add", 12.0, on(pal.accent)).font(UI_MEDIUM)).padding([6, 14]).style(style::primary()).on_press(Message::Setting(Setting::AddPath)),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .padding([4, 12]),
+        ]
+        .spacing(4)
+        .padding(Padding { bottom: 8.0, ..Padding::ZERO });
+        column![group_raw("Harnesses", rows), group_raw("Watch another folder", vec![add.into()])].spacing(18).into()
+    }
+
+    fn page_office(&self, cfg: &crate::config::Config) -> El<'_> {
+        let pal = p();
+        let switch = |v: bool, f: fn(bool) -> Setting| -> El<'static> { toggler(v).on_toggle(move |x| Message::Setting(f(x))).size(18).style(style::toggle).into() };
+        let label = |s: String| -> El<'static> { t(s, 12.5, pal.text).font(UI_MEDIUM).into() };
+        let plain = |s: String| -> El<'static> { t(s, 12.5, pal.text).into() };
+
+        let mins = |m: u64| if m % 60 == 0 { format!("{} h", m / 60) } else { format!("{m} min") };
+        let mut steps = vec![15u64, 30, 45, 60, 120, 240];
+        if !steps.contains(&cfg.active_minutes) {
+            steps.push(cfg.active_minutes);
+            steps.sort();
+        }
+        let window = self.dropdown("minutes", label(mins(cfg.active_minutes)), steps.iter().map(|&m| (plain(mins(m)), Message::Setting(Setting::ActiveMinutes(m)), m == cfg.active_minutes)).collect(), 110.0);
+        let tabs = self.dropdown("tabs", label(cfg.max_tabs.to_string()), (1..=12usize).map(|n| (plain(n.to_string()), Message::Setting(Setting::MaxTabs(n)), n == cfg.max_tabs)).collect(), 110.0);
+        let fps_name = |v: u32| match v {
+            12 => "12 fps · lighter".to_owned(),
+            24 => "24 fps · smoothest".to_owned(),
+            v => format!("{v} fps"),
+        };
+        let fps = self.dropdown("fps", label(format!("{} fps", cfg.anim_fps)), [12u32, 16, 24].into_iter().map(|v| (plain(fps_name(v)), Message::Setting(Setting::AnimFps(v)), v == cfg.anim_fps)).collect(), 110.0);
+
+        let keys = [("Drag", "Turn and tilt"), ("Right-drag", "Pan"), ("Scroll", "Zoom"), ("Q  E", "Turn a quarter"), ("R", "Classic angle"), ("N", "New office"), ("F", "Follow"), ("Tab", "Next agent"), ("1–9", "Switch tab"), ("Esc", "Close")];
+        let key_rows = keys.iter().map(|(k, v)| -> El { row![t(*v, 12.0, pal.muted).width(Fill), container(mono(*k, 11.0, pal.text)).padding([2, 7]).style(style::inset())].align_y(Alignment::Center).padding([5, 12]).into() }).collect();
+        let path = crate::config::Config::path().map(|p| tidy_path(&p)).unwrap_or_default();
+        column![
+            group("Scene", vec![
+                item("Speech bubbles", None, switch(cfg.bubbles, Setting::Bubbles)),
+                item("Snap to corners", Some("After a drag, settle where the art reads best"), switch(cfg.snap_view, Setting::SnapView)),
+                item("Demo crew", Some("Pretend agents when nothing is live"), switch(cfg.demo_when_empty, Setting::Demo)),
+            ]),
+            group("Sessions", vec![item("Active within", None, window), item("Most tabs", None, tabs)]),
+            group("Performance", vec![item("Animation", None, fps), item("Show frame rate", None, switch(cfg.show_fps, Setting::ShowFps))]),
+            group_raw("Controls", key_rows),
+            group_raw("Config file", vec![row![mono(clip(&path, 34), 11.0, pal.muted).width(Fill), button(t("Open folder", 12.0, pal.text).font(UI_MEDIUM)).padding([5, 12]).style(style::secondary()).on_press(Message::Setting(Setting::OpenConfigFolder))].align_y(Alignment::Center).padding([8, 12]).into()]),
+        ]
+        .spacing(18)
+        .into()
+    }
+}
+
+/// A settings row: label (with an optional hint under it) on the left, its control on the right.
+fn item<'a>(label: &'a str, hint: Option<&'a str>, control: El<'a>) -> El<'a> {
+    let pal = p();
+    let mut l = column![t(label, 12.5, pal.text)].spacing(2).width(Fill);
+    if let Some(h) = hint {
+        l = l.push(t(h, 11.0, pal.muted));
+    }
+    row![l, control].spacing(12).align_y(Alignment::Center).padding([8, 12]).into()
+}
+
+/// A titled block of rows with hairlines between them.
+fn group_raw<'a>(title: &'a str, rows: Vec<El<'a>>) -> El<'a> {
+    let pal = p();
+    let mut c = column![];
+    let n = rows.len();
+    for (i, r) in rows.into_iter().enumerate() {
+        c = c.push(r);
+        if i + 1 < n {
+            c = c.push(container(container(Space::new()).width(Fill).height(1).style(style::fill(alpha(pal.text, 0.06), 0.0))).padding([0, 12]));
+        }
+    }
+    column![t(title, 11.5, pal.muted).font(UI_BOLD), container(c).padding([3, 0]).style(style::group())].spacing(7).into()
+}
+
+fn group<'a>(title: &'a str, rows: Vec<El<'a>>) -> El<'a> {
+    group_raw(title, rows)
+}
+
+/// A theme in miniature: its panel colour with its three signal colours on it.
+fn chip<'a>(q: style::Pal) -> El<'a> {
+    container(row![dot(q.accent, 6.0), dot(q.working, 6.0), dot(q.waiting, 6.0)].spacing(3))
+        .padding([4, 6])
+        .style(move |_| container::Style { background: Some(iced::Background::Color(q.surface)), border: iced::Border { color: alpha(q.text, 0.15), width: 1.0, radius: 6.0.into() }, ..Default::default() })
+        .into()
+}
+
+/// An office style in miniature: its two wall colours.
+fn room_chip<'a>(th: &crate::office::gen::Theme) -> El<'a> {
+    let c = |v: u32| Color::from_rgb8((v >> 16) as u8, (v >> 8) as u8, v as u8);
+    let (a, b) = (c(th.back), c(th.accent));
+    row![container(Space::new()).width(10).height(16).style(style::fill(a, 3.0)), container(Space::new()).width(10).height(16).style(style::fill(b, 3.0))].spacing(2).into()
 }
 
 fn fmt_ago(s: u64) -> String {

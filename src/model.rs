@@ -13,6 +13,12 @@ pub struct SessionKey {
     pub id: String,
 }
 
+impl std::fmt::Display for SessionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.harness, self.id)
+    }
+}
+
 /// Which agent inside a session an event belongs to. The lead is the agent the user talks to;
 /// subagents are the helpers it spawns (Claude Code's Task tool, Codex sub-tasks and so on).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

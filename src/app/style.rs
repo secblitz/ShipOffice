@@ -267,6 +267,37 @@ pub fn flat(on: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     }
 }
 
+/// A dropdown's trigger: a quiet field that lights up while hovered or open.
+pub fn trigger(open: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    let p = p();
+    move |_, status| {
+        let bg = if open || hot(status) { mix(p.raised, p.text, 0.06) } else { p.raised };
+        let ring = if open { alpha(p.accent, 0.9) } else { Color::TRANSPARENT };
+        button::Style { background: Some(Background::Color(bg)), text_color: p.text, border: Border { color: ring, width: 1.5, radius: 9.0.into() }, ..Default::default() }
+    }
+}
+
+/// The floating panel a dropdown opens.
+pub fn menu_panel() -> impl Fn(&Theme) -> container::Style {
+    let (p, sh) = (p(), shadow(1.4));
+    move |_| container::Style { background: Some(Background::Color(mix(p.surface, p.raised, 0.5))), border: Border { color: alpha(p.text, 0.08), width: 1.0, radius: 12.0.into() }, shadow: sh, text_color: Some(p.text), ..Default::default() }
+}
+
+/// One choice in a dropdown.
+pub fn menu_item(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    let p = p();
+    move |_, status| {
+        let bg = if hot(status) { alpha(p.text, 0.07) } else if selected { alpha(p.accent, 0.12) } else { Color::TRANSPARENT };
+        button::Style { background: Some(Background::Color(bg)), text_color: p.text, border: border::rounded(8), ..Default::default() }
+    }
+}
+
+/// A settings group: rows on one quiet block.
+pub fn group() -> impl Fn(&Theme) -> container::Style {
+    let p = p();
+    move |_| container::Style { background: Some(Background::Color(mix(p.surface, p.raised, 0.55))), border: border::rounded(12), ..Default::default() }
+}
+
 /// The one strong button in a group.
 pub fn primary() -> impl Fn(&Theme, button::Status) -> button::Style {
     let p = p();

@@ -22,12 +22,16 @@ pub enum Icon {
     TurnLeft,
     TurnRight,
     Reset,
+    Dice,
+    Check,
     Chevron(bool),
 }
 
 struct Draw {
     icon: Icon,
     color: Color,
+    /// radians, for icons that spin as feedback
+    turn: f32,
 }
 
 impl canvas::Program<Message> for Draw {
@@ -39,7 +43,23 @@ impl canvas::Program<Message> for Draw {
         let p = |x: f32, y: f32| Point::new(x * s, y * s);
         let stroke = Stroke::default().with_width((s / 11.0).max(1.2)).with_color(self.color).with_line_cap(LineCap::Round);
         let line = |f: &mut Frame, a: Point, b: Point| f.stroke(&Path::line(a, b), stroke);
+        if self.turn != 0.0 {
+            f.translate(iced::Vector::new(s / 2.0, s / 2.0));
+            f.rotate(self.turn);
+            f.translate(iced::Vector::new(-s / 2.0, -s / 2.0));
+        }
         match self.icon {
+            Icon::Dice => {
+                // a die showing five: reads as "roll a new one"
+                f.stroke(&Path::rounded_rectangle(p(0.2, 0.2), Size::new(0.6 * s, 0.6 * s), (0.14 * s).into()), stroke);
+                for (x, y) in [(0.36, 0.36), (0.64, 0.36), (0.5, 0.5), (0.36, 0.64), (0.64, 0.64)] {
+                    f.fill(&Path::circle(p(x, y), s * 0.055), self.color);
+                }
+            }
+            Icon::Check => {
+                line(&mut f, p(0.26, 0.52), p(0.43, 0.68));
+                line(&mut f, p(0.43, 0.68), p(0.75, 0.33));
+            }
             Icon::Minimize => line(&mut f, p(0.25, 0.55), p(0.75, 0.55)),
             Icon::Maximize => f.stroke(&Path::rectangle(p(0.27, 0.27), Size::new(0.46 * s, 0.46 * s)), stroke),
             Icon::Close => {
@@ -140,7 +160,12 @@ impl canvas::Program<Message> for Draw {
 }
 
 pub fn icon<'a>(icon: Icon, size: f32, color: Color) -> Element<'a, Message> {
-    canvas::Canvas::new(Draw { icon, color }).width(size).height(size).into()
+    canvas::Canvas::new(Draw { icon, color, turn: 0.0 }).width(size).height(size).into()
+}
+
+/// An icon turned by `turn` radians around its centre.
+pub fn icon_turned<'a>(icon: Icon, size: f32, color: Color, turn: f32) -> Element<'a, Message> {
+    canvas::Canvas::new(Draw { icon, color, turn }).width(size).height(size).into()
 }
 
 /// The window icon, from the same artwork as the app bundles.

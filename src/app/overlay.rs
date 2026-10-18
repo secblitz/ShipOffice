@@ -30,8 +30,10 @@ pub struct State {
     press: Option<Point>,
     last: Option<Point>,
     dragged: bool,
-    /// this drag turns the view instead of panning (right button, or shift + left)
+    /// this drag turns the view (left button) rather than panning (right, middle, shift + left)
     orbit: bool,
+    /// the press was the left button (only it clicks)
+    left: bool,
     shift: bool,
     hover: Option<Hit>,
 }
@@ -72,15 +74,16 @@ impl canvas::Program<Message> for Overlay<'_> {
                 st.shift = m.shift();
                 None
             }
-            Event::Mouse(mouse::Event::ButtonPressed(b @ (mouse::Button::Left | mouse::Button::Right))) => {
+            Event::Mouse(mouse::Event::ButtonPressed(b @ (mouse::Button::Left | mouse::Button::Right | mouse::Button::Middle))) => {
                 pos?;
                 st.press = cursor.position();
                 st.last = cursor.position();
                 st.dragged = false;
-                st.orbit = *b == mouse::Button::Right || st.shift;
+                st.left = *b == mouse::Button::Left;
+                st.orbit = st.left && !st.shift;
                 Some(Action::capture())
             }
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Right)) => {
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Right | mouse::Button::Middle)) => {
                 st.press = None;
                 st.last = None;
                 st.dragged = false;
@@ -89,9 +92,12 @@ impl canvas::Program<Message> for Overlay<'_> {
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                 let was = st.press.take();
                 st.last = None;
-                if was.is_none() || st.dragged || st.orbit {
-                    st.dragged = false;
+                if was.is_none() || !st.left {
                     return None;
+                }
+                if st.dragged {
+                    st.dragged = false;
+                    return st.orbit.then(|| Action::publish(Message::OrbitEnd).and_capture());
                 }
                 let hit = pos.and_then(|p| {
                     let (wx, wy) = self.cam.to_world(p.x, p.y);
@@ -109,6 +115,9 @@ impl canvas::Program<Message> for Overlay<'_> {
             }
             Event::Mouse(mouse::Event::CursorLeft) => {
                 st.press = None;
+                if std::mem::take(&mut st.dragged) && st.orbit {
+                    return Some(Action::publish(Message::OrbitEnd));
+                }
                 if st.hover.take().is_some() {
                     return Some(Action::publish(Message::Hover(None)));
                 }

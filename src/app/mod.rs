@@ -5,6 +5,7 @@ pub mod demo;
 pub mod hud;
 pub mod icon;
 pub mod overlay;
+pub mod popover;
 pub mod style;
 
 use crate::config::Config;
@@ -43,6 +44,8 @@ pub enum Message {
     Pan(Vector),
     /// drag to turn (x) and tilt (y) the view
     Orbit(Vector),
+    /// the drag that turned the view let go
+    OrbitEnd,
     /// turn by this many radians, eased
     Turn(f32),
     ResetView,
@@ -56,7 +59,14 @@ pub enum Message {
     ToggleFeed,
     ToggleCrew,
     ToggleSettings,
+    /// a fresh office for the active session
     NewLayout,
+    /// open one settings dropdown, or close them
+    Menu(Option<&'static str>),
+    /// show one settings page
+    SettingsPage(Page),
+    /// show or hide the hand-picked colours
+    ToggleColors,
     Key(keyboard::Event),
     Window(WindowAction),
     Setting(Setting),
@@ -93,6 +103,15 @@ pub enum Setting {
     Color(String, String),
     ResetColors,
     OfficeStyle(Option<String>),
+    SnapView(bool),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Page {
+    #[default]
+    Look,
+    Sources,
+    Office,
 }
 
 /// A harness as the settings list shows it.
@@ -167,6 +186,12 @@ pub struct App {
     /// when each card or panel opened, for its entrance
     pub opened: HashMap<&'static str, Instant>,
     pub tab_since: Instant,
+    /// the dropdown that is open, if any
+    pub menu: Option<&'static str>,
+    pub page: Page,
+    pub colors_open: bool,
+    /// when the active office was last regenerated (the dice spins)
+    pub rolled: Option<Instant>,
     next_uid: u64,
     shot_taken: bool,
 }
@@ -247,10 +272,29 @@ impl App {
             fitting: false,
             opened: HashMap::new(),
             tab_since: Instant::now(),
+            menu: None,
+            page: Page::default(),
+            colors_open: false,
+            rolled: None,
             next_uid: 1,
             shot_taken: false,
         };
         let mut app = app;
+        // debug: SHIPOFFICE_OPEN="settings,page=office,menu=fps,colors" starts with those open,
+        // for screenshots of the HUD
+        if let Ok(v) = std::env::var("SHIPOFFICE_OPEN") {
+            for part in v.split(',').map(str::trim) {
+                match part.split_once('=') {
+                    None if part == "settings" => app.settings_open = true,
+                    None if part == "colors" => app.colors_open = true,
+                    Some(("page", "look")) => app.page = Page::Look,
+                    Some(("page", "sources")) => app.page = Page::Sources,
+                    Some(("page", "office")) => app.page = Page::Office,
+                    Some(("menu", m)) => app.menu = ["theme", "office", "harness", "minutes", "tabs", "fps"].into_iter().find(|k| *k == m),
+                    _ => {}
+                }
+            }
+        }
         // debug: SHIPOFFICE_VIEW="yaw,pitch" in degrees starts at another angle
         if let Some((y, p)) = std::env::var("SHIPOFFICE_VIEW").ok().and_then(|v| v.split_once(',').and_then(|(a, b)| Some((a.trim().parse::<f32>().ok()?, b.trim().parse::<f32>().ok()?)))) {
             app.yaw = y.to_radians();
@@ -336,7 +380,23 @@ impl App {
                 self.yaw = self.yaw_to;
                 self.pitch = self.pitch_to;
             }
+            Message::OrbitEnd => {
+                if self.config().snap_view {
+                    // the nearest corner: the four angles where the drawings sit on their tiles
+                    let q = std::f32::consts::FRAC_PI_2;
+                    self.yaw_to = view::DEFAULT_YAW + ((self.yaw - view::DEFAULT_YAW) / q).round() * q;
+                }
+            }
             Message::Turn(a) => self.yaw_to += a,
+            Message::Menu(m) => {
+                self.mark("menu", m.is_some());
+                self.menu = m;
+            }
+            Message::SettingsPage(p) => {
+                self.page = p;
+                self.menu = None;
+            }
+            Message::ToggleColors => self.colors_open = !self.colors_open,
             Message::ResetView => {
                 // the shortest way back to the classic angle
                 let tau = std::f32::consts::TAU;
@@ -377,6 +437,7 @@ impl App {
             }
             Message::ToggleSettings => {
                 self.settings_open = !self.settings_open;
+                self.menu = None;
                 self.mark("settings", self.settings_open);
             }
             Message::NewLayout => self.new_layout(),
@@ -390,7 +451,13 @@ impl App {
                     WindowAction::Resize(dir) => window::latest().and_then(move |id| window::drag_resize(id, dir)),
                 }
             }
-            Message::Setting(s) => self.setting(s),
+            Message::Setting(s) => {
+                // a pick from a dropdown closes it; typing does not
+                if !matches!(s, Setting::PathInput(_) | Setting::Color(..)) {
+                    self.menu = None;
+                }
+                self.setting(s)
+            }
         }
         Task::none()
     }
@@ -413,7 +480,9 @@ impl App {
         }
         match key.as_ref() {
             keyboard::Key::Named(Named::Escape) => {
-                if self.settings_open {
+                if self.menu.is_some() {
+                    self.menu = None;
+                } else if self.settings_open {
                     self.settings_open = false;
                 } else {
                     return self.update(Message::CloseCards);
@@ -430,6 +499,7 @@ impl App {
             keyboard::Key::Character("q") => return self.update(Message::Turn(std::f32::consts::FRAC_PI_4)),
             keyboard::Key::Character("e") => return self.update(Message::Turn(-std::f32::consts::FRAC_PI_4)),
             keyboard::Key::Character("r") => return self.update(Message::ResetView),
+            keyboard::Key::Character("n") => return self.update(Message::NewLayout),
             keyboard::Key::Character(c) => {
                 if let Some(n) = c.parse::<usize>().ok().filter(|n| (1..=9).contains(n)) {
                     return self.update(Message::SelectTab(n - 1));
@@ -518,7 +588,7 @@ impl App {
     fn seed_for(&self, s: &Session) -> u32 {
         let project = s.project();
         let cfg = self.config();
-        cfg.layouts.get(&project).copied().unwrap_or_else(|| hash(&s.cwd.as_ref().map_or_else(|| project.clone(), |p| p.to_string_lossy().into_owned())))
+        cfg.layouts.get(&s.key.to_string()).or_else(|| cfg.layouts.get(&project)).copied().unwrap_or_else(|| hash(&s.cwd.as_ref().map_or_else(|| project.clone(), |p| p.to_string_lossy().into_owned())))
     }
 
     /// Which sessions get an office: the recently active ones, newest first, up to the tab limit.
@@ -580,11 +650,14 @@ impl App {
         let Some(key) = self.tab().map(|t| t.key.clone()) else { return };
         let Some(s) = self.sessions.get(&key) else { return };
         let project = s.project();
-        let seed = hash(&format!("{project}:{}", self.started.elapsed().as_nanos()));
+        let seed = hash(&format!("{key}:{}", self.started.elapsed().as_nanos()));
+        // pinned to this session only; other sessions of the project keep theirs
         if let Ok(mut c) = self.cfg.write() {
-            c.layouts.insert(project.clone(), seed);
+            c.layouts.insert(key.to_string(), seed);
             let _ = c.save();
         }
+        self.rolled = Some(Instant::now());
+        self.tab_since = Instant::now();
         let uid = self.next_uid;
         self.next_uid += 1;
         let world = self.world_for(&project, seed);
@@ -770,6 +843,7 @@ impl App {
                 Setting::Bubbles(v) => c.bubbles = v,
                 Setting::Demo(v) => c.demo_when_empty = v,
                 Setting::ShowFps(v) => c.show_fps = v,
+                Setting::SnapView(v) => c.snap_view = v,
                 Setting::AnimFps(v) => c.anim_fps = v,
                 Setting::ActiveMinutes(v) => c.active_minutes = v,
                 Setting::MaxTabs(v) => c.max_tabs = v,

@@ -20,11 +20,13 @@ pub struct Config {
     pub show_fps: bool,
     /// Per harness: on/off and extra folders to watch, keyed by adapter id (`claude-code`, `codex`...).
     pub harness: BTreeMap<String, HarnessConfig>,
-    /// Pin a project's office layout: project folder name -> layout seed.
+    /// Pin an office layout: session key (or, for every session of it, a project folder name) -> layout seed.
     pub layouts: BTreeMap<String, u32>,
     pub appearance: Appearance,
     /// The live feed panel is open.
     pub feed_open: bool,
+    /// After a drag, ease the view to the nearest corner angle, where the art reads cleanly.
+    pub snap_view: bool,
 }
 
 /// How the HUD looks: a preset, plus any colours you changed on top of it.
@@ -74,6 +76,7 @@ impl Default for Config {
             layouts: BTreeMap::new(),
             appearance: Appearance::default(),
             feed_open: false,
+            snap_view: true,
         }
     }
 }

@@ -10,7 +10,7 @@ pub const K: f32 = TW / 2.0 * std::f32::consts::SQRT_2;
 pub const DEFAULT_YAW: f32 = std::f32::consts::FRAC_PI_4;
 /// 30°: the 2:1 isometric tilt.
 pub const DEFAULT_PITCH: f32 = std::f32::consts::FRAC_PI_6;
-pub const MIN_PITCH: f32 = 0.30;
+pub const MIN_PITCH: f32 = 0.20;
 pub const MAX_PITCH: f32 = std::f32::consts::FRAC_PI_2 - 0.02;
 
 /// Wall height in tile units: 118 px tall at the default angle.
