@@ -1,0 +1,29 @@
+[package]
+name = "shipoffice"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "A living isometric office for your AI coding agents"
+license = "MIT"
+build = "build.rs"
+
+[dependencies]
+iced = { version = "0.14", features = ["canvas", "image", "tokio", "advanced"] }
+image = { version = "0.25", default-features = false, features = ["png", "webp"] }
+tiny-skia = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+directories = "6"
+rusqlite = { version = "0.37", features = ["bundled"] }
+glob = "0.3"
+time = { version = "0.3", features = ["parsing", "formatting", "macros"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev.package."*"]
+opt-level = 2
