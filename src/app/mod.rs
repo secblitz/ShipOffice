@@ -183,6 +183,11 @@ pub fn run() -> iced::Result {
     {
         win.decorations = false;
     }
+    // the dock pairs the window with shipoffice.desktop by this id
+    #[cfg(target_os = "linux")]
+    {
+        win.platform_specific.application_id = String::from("shipoffice");
+    }
     iced::application(App::boot, App::update, App::view)
         .title(|_: &App| String::from("ShipOffice"))
         .theme(|_: &App| style::theme())
