@@ -191,6 +191,10 @@ impl Reader {
             "system" if v.get("subtype").and_then(Value::as_str) == Some("turn_duration") && !sub => {
                 out.push(self.ev(at, EventKind::TurnEnd));
             }
+            "system" if v.get("subtype").and_then(Value::as_str) == Some("compact_boundary") => {
+                let pre_tokens = v.pointer("/compactMetadata/preTokens").and_then(Value::as_u64);
+                out.push(self.ev(at, EventKind::Compacted { pre_tokens }));
+            }
             "ai-title" | "custom-title" => {
                 let t = v.get("customTitle").or_else(|| v.get("aiTitle")).and_then(Value::as_str);
                 if let Some(t) = t {

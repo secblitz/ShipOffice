@@ -194,8 +194,12 @@ pub struct App {
     pub tab_since: Instant,
     /// the dropdown that is open, if any
     pub menu: Option<&'static str>,
+    /// each harness's compaction setting per project, read in the background
+    compaction: Arc<std::sync::Mutex<HashMap<(String, Option<PathBuf>), (Instant, Option<crate::harness::compaction::Compaction>)>>>,
     pub page: Page,
     pub colors_open: bool,
+    /// debug: select the first agent once an office has one
+    inspect_pending: bool,
     /// when the active office was last regenerated (the dice spins)
     pub rolled: Option<Instant>,
     next_uid: u64,
@@ -280,8 +284,10 @@ impl App {
             opened: HashMap::new(),
             tab_since: Instant::now(),
             menu: None,
+            compaction: Default::default(),
             page: Page::default(),
             colors_open: false,
+            inspect_pending: false,
             rolled: None,
             next_uid: 1,
             shot_taken: false,
@@ -294,6 +300,7 @@ impl App {
                 match part.split_once('=') {
                     None if part == "settings" => app.settings_open = true,
                     None if part == "colors" => app.colors_open = true,
+                    None if part == "inspect" => app.inspect_pending = true,
                     Some(("page", "look")) => app.page = Page::Look,
                     Some(("page", "sources")) => app.page = Page::Sources,
                     Some(("page", "office")) => app.page = Page::Office,
@@ -738,6 +745,13 @@ impl App {
             }
         }
         self.motion(dt);
+        if self.inspect_pending {
+            if let Some(id) = self.tab().and_then(|t| t.world.avatars.first()).map(|a| a.id) {
+                self.inspect_pending = false;
+                self.selected = Some(id);
+                self.mark("inspector", true);
+            }
+        }
         self.layers();
         self.build_scene();
     }
@@ -774,6 +788,26 @@ impl App {
                 t.board_stats = Some(st);
             }
         }
+    }
+
+    /// The user's compaction setting for a session's harness and project. Read on a worker the
+    /// first time and every 30 s after, so the HUD never waits on a file.
+    pub fn compaction_for(&self, harness: &str, cwd: Option<&std::path::Path>) -> Option<crate::harness::compaction::Compaction> {
+        let key = (harness.to_owned(), cwd.map(PathBuf::from));
+        let mut map = self.compaction.lock().ok()?;
+        let stale = map.get(&key).is_none_or(|(at, _)| at.elapsed() > Duration::from_secs(30));
+        if stale {
+            let known = map.get(&key).and_then(|(_, c)| c.clone());
+            map.insert(key.clone(), (Instant::now(), known));
+            let (shared, job) = (self.compaction.clone(), key.clone());
+            std::thread::spawn(move || {
+                let found = crate::harness::compaction::read(&job.0, job.1.as_deref());
+                if let Ok(mut map) = shared.lock() {
+                    map.insert(job, (Instant::now(), found));
+                }
+            });
+        }
+        map.get(&key).and_then(|(_, c)| c.clone())
     }
 
     pub fn started_secs(&self) -> f32 {

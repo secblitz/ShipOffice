@@ -135,6 +135,7 @@ impl Reader {
                 out.push(self.ev(at, EventKind::Meta { cwd, branch: None, model, title: None }));
             }
             "response_item" => self.item(p, ptype, at, out),
+            "compacted" => out.push(self.ev(at, EventKind::Compacted { pre_tokens: None })),
             "token_usage_record" => {
                 if let Some(u) = p.get("usage") {
                     out.push(self.ev(at, EventKind::Usage(usage(u))));
@@ -163,11 +164,17 @@ impl Reader {
                     let t = p.get("text").and_then(Value::as_str).unwrap_or("");
                     out.push(self.ev(at, EventKind::Thinking { text: clip(t, 140) }));
                 }
-                "token_count" if !self.started => {
-                    if let Some(u) = p.pointer("/info/last_token_usage") {
-                        out.push(self.ev(at, EventKind::Usage(usage(u))));
+                "token_count" => {
+                    if let Some(w) = p.pointer("/info/model_context_window").and_then(Value::as_u64) {
+                        out.push(self.ev(at, EventKind::ContextWindow(w)));
+                    }
+                    if !self.started {
+                        if let Some(u) = p.pointer("/info/last_token_usage") {
+                            out.push(self.ev(at, EventKind::Usage(usage(u))));
+                        }
                     }
                 }
+                "context_compacted" => out.push(self.ev(at, EventKind::Compacted { pre_tokens: None })),
                 "item_completed" => {
                     let item = &p["item"];
                     if item.get("type").and_then(Value::as_str) == Some("SubAgentActivity")

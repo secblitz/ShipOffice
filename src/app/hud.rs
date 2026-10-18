@@ -225,16 +225,12 @@ impl App {
     /// One line with what matters now; the session card has the rest.
     fn status_line(&self, s: &Session) -> El<'_> {
         let pal = p();
-        let ctx = (s.context as f32 / s.context_window() as f32).clamp(0.0, 1.0);
-        let ctx_color = if ctx > 0.85 { pal.danger } else { pal.muted };
         let mut r = row![
             self.status_dot(s.status, 8.0),
             t(status_label(s.status), 12.5, pal.text).font(UI_BOLD),
             mono(fmt_t(ago(s.status_since)), 11.5, pal.muted),
             t("·", 12.0, pal.muted),
             mono(format!("${:.2}", s.cost_estimate()), 11.5, pal.text),
-            t("·", 12.0, pal.muted),
-            mono(format!("ctx {}%", (ctx * 100.0).round()), 11.5, ctx_color),
         ]
         .spacing(7)
         .align_y(Alignment::Center);
@@ -384,6 +380,7 @@ impl App {
         let kv = |k: &'static str, v: String| -> El<'static> { column![t(k, 11.0, pal.muted), mono(v, 13.0, pal.text)].spacing(2).width(Fill).into() };
         let (tok, tools) = st.map_or((0, 0), |st| (st.tokens, st.tools_used));
         col = col.push(row![kv("Tokens", fmt_k(tok)), kv("Tool calls", tools.to_string()), kv("Seat", seat)].spacing(10));
+        col = col.push(self.context_gauge(s, st));
         let hist: Vec<El> = s
             .feed
             .iter()
@@ -403,6 +400,58 @@ impl App {
         col = col.push(row![follow, Space::new().width(Fill), tool(Icon::Left, "Previous", Message::Step(-1), false), tool(Icon::Right, "Next  Tab", Message::Step(1), false)].spacing(2).align_y(Alignment::Center));
         let card = container(col).padding(14).width(300).style(style::card());
         Some(self.hang(card.into(), sx, sy, 300.0, 300.0, e))
+    }
+
+    /// One agent's context: how full it is, where the user's compaction setting kicks in, and how
+    /// often it has been compacted.
+    fn context_gauge(&self, s: &Session, st: Option<&crate::session::AgentState>) -> El<'static> {
+        use crate::harness::compaction::Rule;
+        let pal = p();
+        let window = s.context_window().max(1);
+        let (ctx, times, last) = st.map_or((0, 0, None), |st| (st.context, st.compactions, st.compacted_at));
+        let share = (ctx as f32 / window as f32).clamp(0.0, 1.0);
+        let known = matches!(s.key.harness, "claude-code" | "codex" | "gemini-cli" | "qwen-code");
+        let setting = if known { self.compaction_for(s.key.harness, s.cwd.as_deref()) } else { None };
+        let mark = match setting.as_ref().map(|c| &c.rule) {
+            Some(Rule::Share(x)) => Some(*x),
+            Some(Rule::Tokens(n)) => Some((*n as f32 / window as f32).min(1.0)),
+            _ => None,
+        };
+        let near = mark.map_or(share > 0.9, |m| share >= m - 0.05);
+        let fill = ((share * 1000.0) as u16).clamp(1, 1000);
+        let level = row![container(Space::new()).width(Length::FillPortion(fill)).height(6).style(style::fill(if near { pal.danger } else { pal.accent }, 3.0)), Space::new().width(Length::FillPortion((1000 - fill).max(1)))];
+        let mut bar = stack![container(Space::new()).width(Fill).height(6).style(style::fill(pal.faint, 3.0)), level];
+        if let Some(m) = mark {
+            let at = ((m * 1000.0) as u16).clamp(1, 999);
+            bar = bar.push(row![Space::new().width(Length::FillPortion(at)), container(Space::new()).width(2).height(10).style(style::fill(pal.text, 1.0)), Space::new().width(Length::FillPortion(1000 - at))].align_y(Alignment::Center).height(6));
+        }
+        let rule = match setting.as_ref().map(|c| &c.rule) {
+            Some(Rule::Off) => "Auto-compact off".to_owned(),
+            Some(Rule::Share(x)) => format!("Compacts at {:.0}%", x * 100.0),
+            Some(Rule::Tokens(n)) => format!("Compacts at {}", fmt_k(*n)),
+            None if known => "Compacts near the limit".to_owned(),
+            None => String::new(),
+        };
+        let mut col = column![
+            row![t("Context", 11.0, pal.muted), Space::new().width(Fill), mono(format!("{}% · {} of {}", (share * 100.0).round(), fmt_k(ctx), fmt_k(window)), 11.0, pal.text)],
+            container(bar).height(10).align_y(Alignment::Center),
+        ]
+        .spacing(5);
+        let mut notes: Vec<String> = Vec::new();
+        if !rule.is_empty() {
+            notes.push(match &setting {
+                Some(c) => format!("{rule} · {}", c.from),
+                None => format!("{rule} (default)"),
+            });
+        }
+        if times > 0 {
+            let ago = last.map(|t| format!(", last {} ago", fmt_ago(ago(t)))).unwrap_or_default();
+            notes.push(format!("Compacted {times}×{ago}"));
+        }
+        for n in notes {
+            col = col.push(t(clip(&n, 60), 11.0, pal.muted));
+        }
+        col.into()
     }
 
     fn board_card(&self) -> Option<El<'_>> {
@@ -434,16 +483,11 @@ impl App {
             ("Crew", tab.world.avatars.len().to_string()),
         ];
         let grid = column(cells.chunks(2).map(|pair| -> El { row(pair.iter().map(|(k, v)| -> El { column![t(*k, 11.0, pal.muted), mono(v.clone(), 14.0, pal.text)].spacing(2).width(Fill).into() })).spacing(12).into() })).spacing(10);
-        let ctx = (s.context as f32 / s.context_window() as f32).clamp(0.0, 1.0);
-        let fillw = ((ctx * 1000.0) as u16).clamp(1, 1000);
-        let bar = row![container(Space::new()).width(Length::FillPortion(fillw)).height(6).style(style::fill(if ctx > 0.85 { pal.danger } else { pal.accent }, 3.0)), Space::new().width(Length::FillPortion((1000 - fillw).max(1)))];
-        let bar = container(bar).width(Fill).height(6).style(style::fill(pal.faint, 3.0));
         let sub = [Some(s.harness_name.clone()), s.branch.clone().filter(|b| b != "HEAD"), s.model.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
         let col = column![
             row![column![t(clip(&s.project(), 30), 14.0, pal.text).font(UI_BOLD), t(clip(&sub, 46), 11.5, pal.muted)].spacing(1).width(Fill), small_x(Message::CloseCards)].align_y(Alignment::Center),
             row![badge(status_label(s.status)), mono(fmt_t(ago(s.status_since)), 11.5, pal.muted)].spacing(8).align_y(Alignment::Center),
             grid,
-            column![row![t("Context window", 11.0, pal.muted), Space::new().width(Fill), mono(format!("{}% of {}", (ctx * 100.0).round(), fmt_k(s.context_window())), 11.0, pal.text)], bar].spacing(6),
         ]
         .spacing(12);
         let card = container(col).padding(14).width(310).style(style::card());

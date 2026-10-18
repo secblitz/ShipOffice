@@ -27,6 +27,10 @@ pub struct AgentState {
     pub thought: Option<String>,
     pub tools_used: u32,
     pub tokens: u64,
+    /// tokens the agent's last request carried: how full its own context is
+    pub context: u64,
+    pub compactions: u32,
+    pub compacted_at: Option<SystemTime>,
     pub done: bool,
     pub last: SystemTime,
     pub since: SystemTime,
@@ -43,6 +47,9 @@ impl AgentState {
             said: None,
             thought: None,
             tools_used: 0,
+            context: 0,
+            compactions: 0,
+            compacted_at: None,
             tokens: 0,
             done: false,
             last: at,
@@ -75,6 +82,8 @@ pub struct Session {
     pub usage: Usage,
     /// Tokens the last request sent: how full the context window is.
     pub context: u64,
+    /// The context window the log reported, if it did.
+    pub window: Option<u64>,
     pub tool_counts: BTreeMap<String, u32>,
     pub agents: BTreeMap<AgentRef, AgentState>,
     pub feed: VecDeque<FeedItem>,
@@ -100,6 +109,7 @@ impl Session {
             last: at,
             status_since: at,
             usage: Usage::default(),
+            window: None,
             context: 0,
             tool_counts: BTreeMap::new(),
             agents,
@@ -245,8 +255,20 @@ impl Session {
                 if who == AgentRef::Lead {
                     self.context = u.total_in() + u.output;
                 }
-                self.agent(&who, at).tokens += u.input + u.output + u.cache_write;
+                let a = self.agent(&who, at);
+                a.tokens += u.input + u.output + u.cache_write;
+                a.context = u.total_in() + u.output;
             }
+            EventKind::Compacted { .. } => {
+                let a = self.agent(&who, at);
+                a.compactions += 1;
+                a.compacted_at = Some(at);
+                a.context = 0;
+                if who == AgentRef::Lead {
+                    self.context = 0;
+                }
+            }
+            EventKind::ContextWindow(w) => self.window = Some(*w),
             EventKind::TurnEnd => {
                 self.set_status(Status::NeedsYou, at);
                 self.waiting_for = Some("Your turn".into());
@@ -289,6 +311,9 @@ impl Session {
 
     /// Context window size for the model, for the "context" gauge.
     pub fn context_window(&self) -> u64 {
+        if let Some(w) = self.window.filter(|w| *w > 0) {
+            return w;
+        }
         let m = self.model.as_deref().unwrap_or("").to_ascii_lowercase();
         if m.contains("1m") {
             1_000_000
