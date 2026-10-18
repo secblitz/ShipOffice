@@ -7,6 +7,7 @@ pub mod claude;
 pub mod codex;
 pub mod gemini;
 pub mod opencode;
+pub mod qwen;
 
 use crate::model::{AgentRef, Event, SessionKey};
 use rusqlite::{Connection, OpenFlags};
@@ -51,6 +52,7 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
         Box::new(opencode::OpenCode::opencode()),
         Box::new(opencode::OpenCode::kilo()),
         Box::new(gemini::GeminiCli::default()),
+        Box::new(qwen::QwenCode),
     ]
 }
 
