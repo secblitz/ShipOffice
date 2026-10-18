@@ -327,12 +327,25 @@ impl App {
         self.tabs.get(self.active)
     }
 
+    /// The camera is turning, tilting, zooming, fitting or following someone.
+    fn moving(&self) -> bool {
+        (self.yaw - self.yaw_to).abs() > 1e-3 || (self.pitch - self.pitch_to).abs() > 1e-3 || self.zoom_to.is_some() || self.fitting || self.follow
+    }
+
     pub fn session(&self) -> Option<&Session> {
         self.tab().and_then(|t| self.sessions.get(&t.key))
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let every = if self.hidden { Duration::from_millis(500) } else { Duration::from_millis(1000 / 30) };
+        // 60 Hz while the view is moving, so turns, tilts and zooms glide; 30 Hz is plenty for a
+        // still office, and a hidden window barely ticks
+        let every = if self.hidden {
+            Duration::from_millis(500)
+        } else if self.moving() {
+            Duration::from_micros(1_000_000 / 60)
+        } else {
+            Duration::from_millis(1000 / 30)
+        };
         Subscription::batch([
             iced::time::every(every).map(Message::Tick),
             window::events().filter_map(|(_, e)| match e {
