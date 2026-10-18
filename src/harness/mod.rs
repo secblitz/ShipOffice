@@ -8,6 +8,7 @@ pub mod cline;
 pub mod codex;
 pub mod copilot;
 pub mod crush;
+pub mod cursor;
 pub mod droid;
 pub mod gemini;
 pub mod goose;
@@ -64,6 +65,7 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
         Box::new(goose::Goose::default()),
         Box::new(crush::Crush::default()),
         Box::new(droid::Droid::default()),
+        Box::new(cursor::Cursor::default()),
     ]
 }
 
