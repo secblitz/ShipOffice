@@ -17,8 +17,8 @@
 </p>
 
 <p align="center">
-  <a href="docs/demo.mp4"><img src="docs/demo.avif" alt="ShipOffice demo: a crew at work high above the city, subagents walking in, the camera turning down to the streets, the inspector, themes and new offices" width="100%"></a>
-  <br><sub><a href="docs/demo.mp4">Watch the full video (1080p, 60 fps)</a></sub>
+  <a href="docs/demo.mp4"><img src="docs/hero.jpg" alt="A crew of four agents at their desks high above the city at night, with bubbles showing what each one is doing" width="100%"></a>
+  <br><sub>▶ <a href="docs/demo.mp4">Watch the 37-second demo (1080p, 60 fps)</a></sub>
 </p>
 
 ---
