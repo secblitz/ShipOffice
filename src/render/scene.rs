@@ -324,8 +324,7 @@ fn prop_depth(p: &Prop, v: &View) -> f32 {
 /// unmirrored, and which way their back art's back panel faces (true is down-right).
 fn sides(name: &str) -> Option<(bool, bool)> {
     match name {
-        "coffee" | "cooler" | "server" => Some((false, true)),
-        "fridge" | "arcade" => Some((true, true)),
+        "coffee" | "cooler" | "server" | "fridge" | "arcade" => Some((true, true)),
         "bookshelf" => Some((false, false)),
         _ => None,
     }
@@ -453,11 +452,13 @@ pub fn build(inp: &Inputs) -> Scene {
         if pi == o.lounge.scoreboard {
             sc.cards = score_cards(p, rect, inst.m[0] < 0.0, o, v);
         }
+        let mirrored = inst.m[0] < 0.0;
         items.push((d, key, inst));
         hits.push((d, Hit::Prop(pi), rect));
         if p.name == "coffee" && brewing {
             if let Some((_, r, s, cx, by)) = prop_box(p, v) {
-                let (x, y) = (cx + 8.0, by - r[3] as f32 * s + 10.0);
+                // from the spout, on the machine's front
+                let (x, y) = (cx + if mirrored { -8.0 } else { 8.0 }, by - r[3] as f32 * s + 10.0);
                 for k in 0..3 {
                     let u = (inp.now * 0.7 + k as f32 / 3.0).fract();
                     let px = x + (inp.now * 3.0 + k as f32).sin() * 2.5;
@@ -651,17 +652,18 @@ fn games_fx(a: &Avatar, w: &World, v: &View, now: f32, cx: f32, by: f32, d: f32,
     let prop = game_at(w, a).map(|g| &o.props[o.lounge.games[g].prop]);
     match (kind, prop) {
         (Play::AirHockey | Play::Foosball, Some(p)) => {
-            // back and forth along the table, a touch above its top
+            // back and forth along the table (whichever way it runs), a touch above its top
             let u = 0.5 + 0.42 * (t * if kind == Play::AirHockey { 2.6 } else { 1.7 }).sin() * (t * 0.37).cos().signum();
-            let (x, y) = v.floor(p.x as f32 + u * p.fx as f32, p.y as f32 + 0.5 + 0.18 * (t * 3.1).sin());
+            let side = 0.5 + 0.18 * (t * 3.1).sin();
+            let (x, y) = if p.fx >= p.fy { v.floor(p.x as f32 + u * p.fx as f32, p.y as f32 + side) } else { v.floor(p.x as f32 + side, p.y as f32 + u * p.fy as f32) };
             let lift = if kind == Play::AirHockey { 26.0 } else { 30.0 };
             let c = if kind == Play::AirHockey { [210, 52, 48, 255] } else { [250, 250, 245, 255] };
-            items.push((v.depth(p.x as f32 + 1.0, p.y as f32 + 0.5) + 0.7, TexKey::Fx(Fx::Dot), dot(x, y - lift, 2.6, c)));
+            items.push((v.depth(p.x as f32 + p.fx as f32 / 2.0, p.y as f32 + p.fy as f32 / 2.0) + 0.7, TexKey::Fx(Fx::Dot), dot(x, y - lift, 2.6, c)));
         }
         (Play::Hoops, Some(p)) => {
             // a shot every 1.6 s: from the hands up to the hoop at the machine's far end, then down
             let u = (t / 1.6).fract();
-            let (hx, hy) = v.floor(p.x as f32 + 0.3, p.y as f32 + 0.5);
+            let (hx, hy) = if p.fx >= p.fy { v.floor(p.x as f32 + 0.3, p.y as f32 + 0.5) } else { v.floor(p.x as f32 + 0.5, p.y as f32 + 0.3) };
             let (hx, hy) = (hx, hy - 92.0);
             let (sx, sy) = (cx, by - 48.0);
             let (x, y) = if u < 0.6 {

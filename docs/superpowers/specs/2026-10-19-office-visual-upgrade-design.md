@@ -14,7 +14,26 @@ every office's lounge its own, and keeps the whole thing sharp on HiDPI screens.
 | Ping pong | board | A flip scoreboard next to the table shows the score, its cards flipping on each point. |
 | Layout | zones | The lounge is laid out in zones: coffee bar on the back wall, ping pong with its scoreboard, a cafe table, a sofa on its rug, and the games, with a clear path to everything. |
 | Size | 6 columns | The lounge is six tiles wide. |
-| Games | all 11, 2-4 per office | Foosball, pinball, air hockey, chess, console, VR, claw machine, board game, guitar, hoops and pool all exist; each office rolls 2 to 4 of them from its seed. |
+| Games | all 11, a few per office | Foosball, pinball, air hockey, chess, console, VR, claw machine, board game, guitar, hoops and pool all exist; each office rolls 1 or 2 of them besides ping pong, from its seed (first 2 to 4, cut back after the owner found lounges too packed). |
+
+## Lounge rules
+
+After seeing real offices the owner found the lounges messy (games crowding the sofa, the rug and
+the ping pong table, too many games at once). The plan now follows these rules:
+
+- Bands from the back wall to the front: the coffee bar (and any machines) on the back wall, ping
+  pong with its scoreboard, the cafe table, then the sofa on its rug against the partition, with a
+  row of floor between each.
+- Nothing stands on the rug or between it and the sofa.
+- Every game keeps a ring of floor all round it and its chairs, corners included, and away from
+  where the ping pong players stand. A two-tile game keeps two tiles clear, as its art is tall
+  enough to cover what is just behind it. Machines on the back wall may stand side by side.
+- Games go against a wall or the partition where they fit. A two-tile table may stand turned
+  either way, and a chair may be got onto from behind, so they fit the corners.
+- Rooms are 10 to 12 tiles deep (the 12-deep ones are where air hockey and hoops find room).
+
+Wall props are drawn with their fronts facing into the room; the coffee machine, the water cooler
+and the server had their art's facing recorded the wrong way round.
 
 A later request from the owner: everything else the crew does (typing, reading, sipping coffee,
 ping pong, playing games) is filmed the same way as walking, and walking eases in and out more

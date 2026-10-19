@@ -317,15 +317,16 @@ const GAMES: [GameDef; 11] = [
 pub fn generate(seed: u32) -> Layout {
     let mut r = Rng::new(seed);
     let w = 15 + (r.next() * 4.0) as i32;
-    let h = 10 + (r.next() * 2.0) as i32;
+    let h = 10 + (r.next() * 3.0) as i32;
     let px = w - 7;
     let l0 = px + 1;
     let theme = *r.pick(&THEMES);
-    let mut b = Builder { w, h, blocked: vec![false; (w * h) as usize], props: Vec::new(), reserved: HashSet::new(), aisle: HashSet::new() };
+    let mut b = Builder { w, h, blocked: vec![false; (w * h) as usize], props: Vec::new(), reserved: HashSet::new(), aisle: HashSet::new(), keep: HashSet::new() };
 
     // lounge plan first so the partition gap can open onto a free tile
-    let flip_lounge = r.next() < 0.5;
-    let (pp_y, cafe_y) = if flip_lounge { (6, 3) } else { (3, 6) };
+    // ping pong at the back, the cafe table in the middle, the sofa at the front, with a row of
+    // floor between each so the tables never touch
+    let (pp_y, cafe_y) = (3, 6);
     let gaps: Vec<i32> = [1, 4, h - 4]
         .into_iter()
         .filter(|&y| y != pp_y && y + 1 != pp_y && y != cafe_y - 1 && y != cafe_y && y + 1 < h - 3)
@@ -421,6 +422,7 @@ pub fn generate(seed: u32) -> Layout {
     let (pp_a, pp_b) = (tile(l0 + 1, pp_y), tile(l0 + 4, pp_y));
     b.reserve(pp_a.x, pp_a.y);
     b.reserve(pp_b.x, pp_b.y);
+    b.keep.extend([(pp_a.x, pp_a.y), (pp_b.x, pp_b.y)]);
     let scoreboard = b.place("scoreboard", l0 + 5, pp_y, 1, 1, Atlas::Games);
     // a cafe table with two chairs
     let cx = l0 + 4;
@@ -446,17 +448,24 @@ pub fn generate(seed: u32) -> Layout {
     if b.ok(l0, h - 1) {
         b.place("plant", l0, h - 1, 1, 1, Atlas::Props);
     }
+    // nothing stands on the rug or between it and the sofa
+    for y in h - 4..h {
+        for x in l0 + 1..=l0 + 3 {
+            b.aisle.insert((x, y));
+        }
+    }
     // walking room: the row under the bar stays free of furniture (people may stand in it)
     for x in l0..w {
         b.aisle.insert((x, 1));
     }
 
-    // the games: two to four, each where its footprint and players fit and nothing gets cut off
+    // the games besides ping pong: one or two, so each office has its own few and room to play
+    // them; they go against a wall where they can, never out in the middle of the floor
     let mut order: Vec<usize> = (0..GAMES.len()).collect();
     for i in (1..order.len()).rev() {
         order.swap(i, r.below(i + 1));
     }
-    let want = 2 + r.below(3);
+    let want = 1 + r.below(2);
     let mut targets: Vec<Tile> = desks.iter().chain(&seats).map(Seat::access).collect();
     targets.extend([pp_a, pp_b, bar, bar_queue]);
     targets.extend((0..shelf_n).map(|i| tile(1, shelf_start + i)));
@@ -470,7 +479,14 @@ pub fn generate(seed: u32) -> Layout {
         for i in (1..cells.len()).rev() {
             cells.swap(i, r.below(i + 1));
         }
-        if let Some((nb, prop, spots, new_seats)) = cells.iter().find_map(|&(x, y)| try_game(&b, g, x, y, l0, door, &targets)) {
+        // a table two tiles long may also stand turned the other way
+        let turns: &[bool] = if g.fx != g.fy { &[false, true] } else { &[false] };
+        let mut tries: Vec<(i32, i32, bool)> = cells.iter().flat_map(|&(x, y)| turns.iter().map(move |&t| (x, y, t))).collect();
+        tries.sort_by_key(|&(x, y, t)| {
+            let (fx, fy) = if t { (g.fy, g.fx) } else { (g.fx, g.fy) };
+            !(y == 0 || x == l0 || x + fx == w || y + fy == h)
+        });
+        if let Some((nb, prop, spots, new_seats)) = tries.iter().find_map(|&(x, y, t)| try_game(&b, g, x, y, t, l0, door, &targets)) {
             b = nb;
             targets.extend(spots.iter().map(|s| s.0));
             targets.extend(new_seats.iter().map(Seat::access));
@@ -518,38 +534,70 @@ pub fn generate(seed: u32) -> Layout {
 /// seats, or None when it does not fit there or would cut a place off from the door.
 type Placed = (Builder, usize, Vec<(Tile, Face)>, Vec<Seat>);
 
-fn try_game(b: &Builder, g: &GameDef, x: i32, y: i32, l0: i32, door: Tile, targets: &[Tile]) -> Option<Placed> {
+/// Turned, its footprint, flip and players' spots swap x for y.
+#[allow(clippy::too_many_arguments)]
+fn try_game(b: &Builder, g: &GameDef, x: i32, y: i32, turned: bool, l0: i32, door: Tile, targets: &[Tile]) -> Option<Placed> {
     let inside = |cx: i32, cy: i32| cx >= l0 && cx < b.w && cy >= 0 && cy < b.h;
     if g.back_wall != (y == 0) {
         return None;
     }
-    let foot: Vec<(i32, i32)> = (0..g.fy).flat_map(|j| (0..g.fx).map(move |i| (x + i, y + j))).collect();
+    let (fx, fy) = if turned { (g.fy, g.fx) } else { (g.fx, g.fy) };
+    let foot: Vec<(i32, i32)> = (0..fy).flat_map(|j| (0..fx).map(move |i| (x + i, y + j))).collect();
     if !foot.iter().all(|&(cx, cy)| inside(cx, cy) && b.ok(cx, cy)) {
         return None;
     }
-    // a little floor around it, so it does not crowd the furniture next to it
-    let roomy = foot.iter().all(|&(cx, cy)| {
-        [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().all(|&(dx, dy)| {
-            let (nx, ny) = (cx + dx, cy + dy);
-            foot.contains(&(nx, ny)) || !inside(nx, ny) || !b.blocked[(ny * b.w + nx) as usize]
+    // a ring of floor all round it and its chairs, corners too, as the art overhangs its tiles;
+    // a big one is drawn tall enough to cover what stands just behind it (and to be covered by
+    // what stands just in front), so it keeps two tiles clear both ways; machines on the back
+    // wall may stand side by side
+    let mut group: Vec<((i32, i32), i32)> = foot.iter().map(|&t| (t, if fx * fy > 1 { 2 } else { 1 })).collect();
+    group.extend(g.seats.iter().map(|c| ((x + c.at.0, y + c.at.1), 1)));
+    let roomy = group.iter().all(|&((cx, cy), r)| {
+        (-r..=r).all(|dy| {
+            (-r..=r).all(|dx| {
+                let (nx, ny) = (cx + dx, cy + dy);
+                group.iter().any(|&(t, _)| t == (nx, ny)) || !inside(nx, ny) || (g.back_wall && ny == 0) || !(b.furniture(nx, ny) || b.keep.contains(&(nx, ny)))
+            })
         })
     });
     if !roomy {
         return None;
     }
-    let spots: Vec<(Tile, Face)> = g.spots.iter().map(|&(dx, dy, f)| (tile(x + dx, y + dy), f)).collect();
+    let spots: Vec<(Tile, Face)> = g
+        .spots
+        .iter()
+        .map(|&(dx, dy, f)| {
+            if !turned {
+                return (tile(x + dx, y + dy), f);
+            }
+            let f = match f {
+                Face::DR => Face::DL,
+                Face::DL => Face::DR,
+                Face::UR => Face::UL,
+                Face::UL => Face::UR,
+            };
+            (tile(x + dy, y + dx), f)
+        })
+        .collect();
     // the VR player stands on the mat itself
     let on_prop = g.kind == Play::Vr;
     if !spots.iter().all(|(t, _)| inside(t.x, t.y) && (on_prop || b.standable(t.x, t.y))) {
         return None;
     }
-    let chairs: Vec<(i32, i32, i32, i32)> = g.seats.iter().map(|c| (x + c.at.0, y + c.at.1, x + c.access.0, y + c.access.1)).collect();
-    if !chairs.iter().all(|&(sx, sy, ax, ay)| inside(sx, sy) && b.ok(sx, sy) && inside(ax, ay) && b.ok(ax, ay)) {
-        return None;
+    // a chair is got onto from beside it, or else from behind it (away from the table)
+    let reach = |ax: i32, ay: i32| inside(ax, ay) && b.standable(ax, ay);
+    let mut chairs: Vec<(i32, i32, i32, i32)> = Vec::new();
+    for c in g.seats {
+        let (sx, sy) = (x + c.at.0, y + c.at.1);
+        if !(inside(sx, sy) && b.ok(sx, sy)) {
+            return None;
+        }
+        let (ax, ay) = [(x + c.access.0, y + c.access.1), (x + 2 * c.at.0, y + 2 * c.at.1)].into_iter().find(|&(ax, ay)| reach(ax, ay))?;
+        chairs.push((sx, sy, ax, ay));
     }
     let mut nb = b.clone();
-    let prop = nb.place(g.prop, x, y, g.fx, g.fy, Atlas::Games);
-    nb.props[prop].flip = g.flip;
+    let prop = nb.place(g.prop, x, y, fx, fy, Atlas::Games);
+    nb.props[prop].flip = g.flip != turned;
     if on_prop {
         // drawn under whoever stands on it
         nb.blocked[(y * nb.w + x) as usize] = false;
@@ -600,6 +648,8 @@ struct Builder {
     reserved: HashSet<(i32, i32)>,
     /// floor kept free of furniture that people may still stand on
     aisle: HashSet<(i32, i32)>,
+    /// floor the games keep their distance from, like furniture (where the ping pong players stand)
+    keep: HashSet<(i32, i32)>,
 }
 
 impl Builder {
@@ -612,6 +662,10 @@ impl Builder {
     }
     fn free(&self, x: i32, y: i32, fx: i32, fy: i32) -> bool {
         (0..fy).all(|j| (0..fx).all(|i| self.inb(x + i, y + j) && !self.blocked[((y + j) * self.w + x + i) as usize]))
+    }
+    /// A prop stands on this tile (the VR mat too, which people may step on).
+    fn furniture(&self, x: i32, y: i32) -> bool {
+        self.props.iter().any(|p| x >= p.x && x < p.x + p.fx && y >= p.y && y < p.y + p.fy)
     }
     fn reserve(&mut self, x: i32, y: i32) {
         self.reserved.insert((x, y));
@@ -649,7 +703,7 @@ mod tests {
             assert!(reach.contains(&o.lounge.pp_a) && reach.contains(&o.lounge.pp_b) && reach.contains(&o.lounge.bar));
             assert!(o.path((o.door.x as f32, o.door.y as f32), o.lounge.bar).is_some());
             let lz = &o.lounge;
-            assert!((2..=4).contains(&lz.games.len()), "seed {seed}: {} games", lz.games.len());
+            assert!((1..=2).contains(&lz.games.len()), "seed {seed}: {} games", lz.games.len());
             assert_eq!(o.props[lz.scoreboard].name, "scoreboard");
             for g in &lz.games {
                 assert_eq!(o.props[g.prop].atlas, Atlas::Games, "seed {seed}: {:?} points at its prop", g.kind);
