@@ -177,7 +177,16 @@ impl canvas::Program<Message> for Overlay<'_> {
             let fade = (b.left / 0.35).min((b.dur - b.left) / 0.2 + 0.2).clamp(0.0, 1.0);
             bubble(&mut f, b.kind, &b.text, style::rgb8(a.color()), sx, sy, lift, k, fade);
         }
-        if let Some(g) = world.s.game.as_ref().filter(|g| g.state == GameState::Playing) {
+        let game = world.s.game.as_ref().filter(|g| g.state == GameState::Playing);
+        if let Some(cards) = self.scene.cards {
+            // between games the board keeps the last result
+            let (score, scorer, age) = game.map_or((world.s.pp_last, 0, 9.0), |g| (g.score, g.scorer, world.s.elapsed - g.point_at));
+            for (side, c) in cards.iter().enumerate() {
+                let (x0, y0) = self.cam.to_screen(c[0], c[1]);
+                let (x1, y1) = self.cam.to_screen(c[0] + c[2], c[1] + c[3]);
+                flip_card(&mut f, Rectangle::new(Point::new(x0, y0), Size::new(x1 - x0, y1 - y0)), score[side], if scorer == side { age } else { 9.0 });
+            }
+        } else if let Some(g) = game {
             let t = &world.s.layout.props[world.s.layout.lounge.pp_table];
             let (wx, wy) = self.view.map_or_else(|| iso(t.x as f32 + 1.0, t.y as f32 + 0.5), |v| v.floor(t.x as f32 + 1.0, t.y as f32 + 0.5));
             let (sx, sy) = self.cam.to_screen(wx, wy);
@@ -381,6 +390,52 @@ fn score(f: &mut Frame, s: [u32; 2], ca: Color, cb: Color, x: f32, y: f32, k: f3
     f.fill_rectangle(Point::new(x - w / 2.0 + 4.0 * k, y + 5.0 * k), Size::new(3.0 * k, 4.0 * k), ca);
     f.fill_rectangle(Point::new(x + w / 2.0 - 7.0 * k, y + 5.0 * k), Size::new(3.0 * k, 4.0 * k), cb);
     label(f, &t, x - w / 2.0 + 9.0 * k, y + 10.0 * k, size, pal.text, MONO);
+}
+
+/// One flip card of the scoreboard. A new score flips in: the top half folds down over the old
+/// number, then the bottom half comes down with the new one.
+fn flip_card(f: &mut Frame, r: Rectangle, value: u32, age: f32) {
+    const FLIP: f32 = 0.32;
+    let ink = Color::from_rgb8(0x24, 0x28, 0x33);
+    let size = (r.height * 0.62).min(r.width * 0.78);
+    let mid = r.y + r.height / 2.0;
+    let digit = |f: &mut Frame, n: u32, squash: f32| {
+        f.with_save(|f| {
+            f.translate(Vector::new(r.x + r.width / 2.0, mid));
+            f.scale_nonuniform(Vector::new(1.0, squash.max(0.001)));
+            f.fill_text(Text {
+                content: n.to_string(),
+                position: Point::ORIGIN,
+                color: ink,
+                size: size.into(),
+                font: UI_BOLD,
+                align_x: iced::widget::text::Alignment::Center,
+                align_y: alignment::Vertical::Center,
+                ..Text::default()
+            });
+        });
+    };
+    let top = Rectangle::new(r.position(), Size::new(r.width, r.height / 2.0));
+    let bottom = Rectangle::new(Point::new(r.x, mid), Size::new(r.width, r.height / 2.0));
+    let p = age / FLIP;
+    if !(0.0..1.0).contains(&p) {
+        digit(f, value, 1.0);
+    } else {
+        let old = value.saturating_sub(1);
+        f.with_clip(top, |f| digit(f, value, 1.0));
+        if p < 0.5 {
+            f.with_clip(bottom, |f| digit(f, old, 1.0));
+            f.with_clip(top, |f| digit(f, old, 1.0 - 2.0 * p));
+        } else {
+            f.with_clip(bottom, |f| digit(f, old, 1.0));
+            f.with_clip(bottom, |f| {
+                f.fill_rectangle(bottom.position(), bottom.size(), Color::from_rgba8(0xf4, 0xef, 0xe4, 1.0));
+                digit(f, value, 2.0 * p - 1.0);
+            });
+        }
+    }
+    // the hinge line across the middle
+    f.fill_rectangle(Point::new(r.x + 1.0, mid - 0.5), Size::new(r.width - 2.0, 1.0), Color::from_rgba8(0, 0, 0, 0.25));
 }
 
 /// Screen offset helper for cards that hang off a world point.

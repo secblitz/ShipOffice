@@ -362,9 +362,11 @@ impl App {
         self.tabs.get(self.active)
     }
 
-    /// The camera is turning, tilting, zooming, fitting or following someone.
+    /// The camera is turning, tilting, zooming, fitting or following someone, or someone in the
+    /// office is walking or changing pose: all of these glide at 60 Hz.
     fn moving(&self) -> bool {
-        (self.yaw - self.yaw_to).abs() > 1e-3 || (self.pitch - self.pitch_to).abs() > 1e-3 || self.zoom_to.is_some() || self.fitting || self.follow
+        let people = self.tab().is_some_and(|t| t.world.avatars.iter().any(|a| a.anim == crate::office::world::Anim::Walk || a.fade.is_some()));
+        (self.yaw - self.yaw_to).abs() > 1e-3 || (self.pitch - self.pitch_to).abs() > 1e-3 || self.zoom_to.is_some() || self.fitting || self.follow || people
     }
 
     pub fn session(&self) -> Option<&Session> {

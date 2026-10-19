@@ -198,14 +198,22 @@ pub fn card(office: &RgbaImage, s: &Stats, crew: &[Member], look: &Look, date: &
     }
 
     // the numbers
-    let tiles = [(s.agents.to_string(), "agents on it"), (fmt_k(s.tools), "tool calls"), (fmt_k(s.tokens), "tokens"), (duration(s.focus), "focus")];
+    let tiles = [(s.agents.to_string(), "AGENTS"), (fmt_k(s.tools), "TOOL CALLS"), (fmt_k(s.tokens), "TOKENS"), (duration(s.focus), "FOCUS")];
     let (ty, th, tg) = (1136.0, 124.0, 16.0);
     let tw = (w - 2.0 * M - 3.0 * tg) / 4.0;
+    let pad = 22.0;
     for (i, (v, l)) in tiles.iter().enumerate() {
         let tx = M + i as f32 * (tw + tg);
-        fill(&mut pm, &rrect(tx, ty, tw, th, 24.0), solid(c(look.surface, 1.0)));
-        text(&mut pm, Font::Semi, v, tx + 24.0, ty + 66.0, 50.0, text_c, -0.5);
-        text(&mut pm, Font::Medium, l, tx + 24.0, ty + 102.0, 23.0, muted, 0.0);
+        let tile = rrect(tx, ty, tw, th, 22.0);
+        fill(&mut pm, &tile, solid(c(look.surface, 1.0)));
+        stroke(&mut pm, &tile, c(look.text, 0.06), 1.5);
+        // a short accent rule ties the tiles to the score
+        fill(&mut pm, &rrect(tx + pad, ty + 20.0, 22.0, 4.0, 2.0), solid(acc));
+        text(&mut pm, Font::Mono, l, tx + pad, ty + 52.0, 17.0, muted, 2.0);
+        // the number shrinks to fit its tile, so 1.68B and 24h 23m never spill out
+        let room = tw - 2.0 * pad;
+        let px = (48.0 * room / width(Font::Semi, v, 48.0, -0.5)).min(48.0);
+        text(&mut pm, Font::Semi, v, tx + pad, ty + th - 22.0, px, text_c, -0.5);
     }
 
     // footer
@@ -383,7 +391,7 @@ mod tests {
     fn draws_a_card() {
         let office = RgbaImage::from_pixel(1600, 1000, image::Rgba([60, 90, 140, 255]));
         let s = Stats { sessions: 2, agents: 4, tools: 312, tokens: 1_240_000, focus: 2 * 3600 + 14 * 60 };
-        let crew: Vec<Member> = (0..9).map(|i| Member { face: None, ring: [200, 40 * i as u8, 90] }).collect();
+        let crew: Vec<Member> = (0..9).map(|i| Member { face: None, ring: [200, (40 * i % 256) as u8, 90] }).collect();
         let look = Look { bg: [16, 19, 26], bg2: [11, 13, 18], surface: [24, 28, 36], raised: [34, 39, 50], text: [236, 239, 244], muted: [139, 147, 167], faint: [52, 58, 72], accent: [59, 130, 246], light: false };
         let img = card(&office, &s, &crew, &look, "Sun 18 Oct 2026");
         assert_eq!(img.dimensions(), (W, H));

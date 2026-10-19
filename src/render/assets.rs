@@ -33,6 +33,11 @@ pub struct Anim {
     pub fh: u32,
     pub frames: u32,
     pub cols: u32,
+    /// frames per second it was filmed at (the video sheets; the drawn ones follow the app's rate)
+    pub fps: Option<f32>,
+    /// a ping pong stroke: where the paddle is at the hit (frame 0), in sheet px from the frame's
+    /// bottom centre, x to the right and y up
+    pub paddle: Option<[f32; 2]>,
 }
 
 #[derive(Debug)]
@@ -42,6 +47,8 @@ pub struct Meta {
     pub items: HashMap<String, (&'static str, [u32; 4])>,
     pub tiles: HashMap<String, [u32; 4]>,
     pub desk_empty: (u32, u32),
+    /// the scoreboard's two flip cards, [x, y, w, h] in its item's px
+    pub score_cards: [[u32; 4]; 2],
     /// atlas file -> pixel size
     pub atlas_size: HashMap<&'static str, (u32, u32)>,
 }
@@ -63,11 +70,13 @@ pub fn meta() -> &'static Meta {
                     fh: num(&a["fh"]),
                     frames: num(&a["frames"]).max(1),
                     cols: num(&a["cols"]).max(1),
+                    fps: a["fps"].as_f64().map(|f| f as f32),
+                    paddle: a["paddle"].as_array().and_then(|p| Some([p.first()?.as_f64()? as f32, p.get(1)?.as_f64()? as f32])),
                 },
             );
         }
         let mut items = HashMap::new();
-        for (atlas, file) in [("props", "props.webp"), ("cafe", "cafe.webp"), ("propsBack", "props_back.webp")] {
+        for (atlas, file) in [("props", "props.webp"), ("cafe", "cafe.webp"), ("propsBack", "props_back.webp"), ("games", "games.webp")] {
             for (k, r) in v[atlas]["items"].as_object().into_iter().flatten() {
                 items.insert(k.clone(), (file, rect(r)));
             }
@@ -78,9 +87,12 @@ pub fn meta() -> &'static Meta {
             ("props.webp", (num(&v["props"]["w"]), num(&v["props"]["h"]))),
             ("cafe.webp", (num(&v["cafe"]["w"]), num(&v["cafe"]["h"]))),
             ("props_back.webp", (num(&v["propsBack"]["w"]), num(&v["propsBack"]["h"]))),
+            ("games.webp", (num(&v["games"]["w"]), num(&v["games"]["h"]))),
             ("desk_empty.webp", desk_empty),
         ]);
-        Meta { anims, items, tiles, desk_empty, atlas_size }
+        let cards = &v["games"]["panels"];
+        let score_cards = [rect(&cards[0]), rect(&cards[1])];
+        Meta { anims, items, tiles, desk_empty, score_cards, atlas_size }
     })
 }
 

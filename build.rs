@@ -17,7 +17,7 @@ fn main() {
             }
         }
     }
-    for k in ["props", "propsBack", "tiles", "cafe", "deskEmpty"] {
+    for k in ["props", "propsBack", "tiles", "cafe", "games", "deskEmpty"] {
         if let Some(f) = meta[k]["file"].as_str() {
             files.push(f.to_owned());
         }

@@ -230,13 +230,16 @@ pub struct BoardStats {
     pub tools: [u32; 5],
 }
 
+/// A count in at most three significant digits and a unit: 950, 9.4k, 24.6k, 168M, 1.68B.
 pub fn fmt_k(n: u64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.2}M", n as f64 / 1e6)
-    } else if n >= 1000 {
-        format!("{:.1}k", n as f64 / 1e3)
-    } else {
-        n.to_string()
+    // 999,999 rounds up to 1000k, so it is shown as 1.00M instead
+    let Some((div, unit)) = [(1e9, "B"), (1e6, "M"), (1e3, "k")].into_iter().find(|(d, _)| n as f64 >= *d * 0.9995) else { return n.to_string() };
+    let v = (n as f64 / div).max(1.0);
+    match v {
+        v if v >= 100.0 => format!("{v:.0}{unit}"),
+        v if v >= 10.0 => format!("{v:.1}{unit}"),
+        v if unit == "k" => format!("{v:.1}{unit}"),
+        v => format!("{v:.2}{unit}"),
     }
 }
 

@@ -1,8 +1,9 @@
 //! Floor plans. Every project gets its own office from a seed: room size, theme, desk rows,
-//! where the lounge sits, the partition gap and the wall decorations all come from it.
+//! the lounge's arrangement and games, the partition gap and the decorations all come from it.
 
 use super::{tile, Face, Rng, Tile};
-use std::collections::{HashSet, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashSet, VecDeque};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Theme {
@@ -28,6 +29,8 @@ pub const THEMES: [Theme; 6] = [
 pub enum Atlas {
     Props,
     Cafe,
+    /// the lounge games and the scoreboard
+    Games,
     /// an empty workstation: the shared desk render
     Desk,
 }
@@ -102,6 +105,9 @@ pub struct Lounge {
     pub pp_table: usize,
     pub bar: Tile,
     pub bar_queue: Tile,
+    /// the ping pong scoreboard prop
+    pub scoreboard: usize,
+    pub games: Vec<GameSpot>,
 }
 
 #[derive(Debug, Clone)]
@@ -150,32 +156,49 @@ impl Layout {
         seen
     }
 
-    /// Shortest 4-way path, excluding the start tile. The goal may itself be blocked (a seat).
+    /// Shortest path in eight directions, excluding the start tile. A diagonal step needs both
+    /// tiles beside it free, so nobody cuts a corner through furniture. The goal may itself be
+    /// blocked (a seat); it is entered straight.
     pub fn path(&self, from: (f32, f32), to: Tile) -> Option<Vec<Tile>> {
         let (w, h) = (self.w, self.h);
         let sx = (from.0.round() as i32).clamp(0, w - 1);
         let sy = (from.1.round() as i32).clamp(0, h - 1);
         let idx = |x: i32, y: i32| (y * w + x) as usize;
         let (start, goal) = (idx(sx, sy), idx(to.x.clamp(0, w - 1), to.y.clamp(0, h - 1)));
+        let open = |x: i32, y: i32| !self.blocked(x, y);
+        let mut dist = vec![u32::MAX; (w * h) as usize];
         let mut prev = vec![usize::MAX; (w * h) as usize];
+        dist[start] = 0;
         prev[start] = start;
-        let mut q = VecDeque::from([start]);
-        while let Some(c) = q.pop_front() {
+        // costs in tenths: 10 straight, 14 diagonal
+        let mut heap = BinaryHeap::from([Reverse((0u32, start))]);
+        while let Some(Reverse((d, c))) = heap.pop() {
             if c == goal {
                 break;
             }
+            if d > dist[c] {
+                continue;
+            }
             let (cx, cy) = ((c as i32) % w, (c as i32) / w);
-            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
                 let (x, y) = (cx + dx, cy + dy);
                 if x < 0 || y < 0 || x >= w || y >= h {
                     continue;
                 }
                 let k = idx(x, y);
-                if prev[k] != usize::MAX || (self.blocked[k] && k != goal) {
+                let diagonal = dx != 0 && dy != 0;
+                if self.blocked[k] && (k != goal || diagonal) {
                     continue;
                 }
-                prev[k] = c;
-                q.push_back(k);
+                if diagonal && !(open(cx + dx, cy) && open(cx, cy + dy)) {
+                    continue;
+                }
+                let nd = d + if diagonal { 14 } else { 10 };
+                if nd < dist[k] {
+                    dist[k] = nd;
+                    prev[k] = c;
+                    heap.push(Reverse((nd, k)));
+                }
             }
         }
         if prev[goal] == usize::MAX {
@@ -192,15 +215,113 @@ impl Layout {
     }
 }
 
-/// Builds the office for a seed. Mirrors `genOffice` in art/preview/office.js.
+/// The games a lounge can have. Each office gets two to four of them, by seed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Play {
+    Foosball,
+    Pinball,
+    AirHockey,
+    Chess,
+    Console,
+    Vr,
+    Claw,
+    BoardGame,
+    Guitar,
+    Hoops,
+    Pool,
+}
+
+impl Play {
+    pub const ALL: [Play; 11] = [Play::Foosball, Play::Pinball, Play::AirHockey, Play::Chess, Play::Console, Play::Vr, Play::Claw, Play::BoardGame, Play::Guitar, Play::Hoops, Play::Pool];
+
+    /// What the HUD says while someone plays.
+    pub fn label(self) -> &'static str {
+        match self {
+            Play::Foosball => "Playing foosball",
+            Play::Pinball => "Playing pinball",
+            Play::AirHockey => "Playing air hockey",
+            Play::Chess => "Playing chess",
+            Play::Console => "Gaming on the console",
+            Play::Vr => "In VR",
+            Play::Claw => "Trying the claw machine",
+            Play::BoardGame => "Playing a board game",
+            Play::Guitar => "Playing the guitar",
+            Play::Hoops => "Shooting hoops",
+            Play::Pool => "Playing pool",
+        }
+    }
+
+    /// Games that wait for a second player before starting.
+    pub fn pair(self) -> bool {
+        matches!(self, Play::Foosball | Play::AirHockey | Play::Chess | Play::BoardGame)
+    }
+}
+
+/// A game in the lounge: its prop, where its players stand (tile and facing), and for the games
+/// played sitting down, the lounge seats they use instead.
+#[derive(Debug, Clone)]
+pub struct GameSpot {
+    pub kind: Play,
+    pub prop: usize,
+    pub spots: Vec<(Tile, Face)>,
+    pub seats: Vec<usize>,
+}
+
+/// How a game sits in the room: its prop and footprint, whether its back must touch the back
+/// wall, where players stand (relative to the prop, with the way they face) and for seated
+/// games the chairs or beanbag around it.
+struct GameDef {
+    kind: Play,
+    prop: &'static str,
+    fx: i32,
+    fy: i32,
+    flip: bool,
+    back_wall: bool,
+    spots: &'static [(i32, i32, Face)],
+    seats: &'static [Chair],
+}
+
+/// A seat that comes with a game: the prop drawn under it, where it is, where you get on, which way you face.
+struct Chair {
+    prop: &'static str,
+    atlas: Atlas,
+    at: (i32, i32),
+    access: (i32, i32),
+    face: Face,
+    lift: f32,
+}
+
+const CAFE_L: Chair = Chair { prop: "chairL", atlas: Atlas::Cafe, at: (0, -1), access: (1, -1), face: Face::DL, lift: 4.0 };
+const CAFE_R: Chair = Chair { prop: "chairR", atlas: Atlas::Cafe, at: (-1, 0), access: (-2, 0), face: Face::DR, lift: 4.0 };
+
+const GAMES: [GameDef; 11] = [
+    // the table art runs along y, so it is mirrored onto its 2x1 footprint like the ping pong table
+    GameDef { kind: Play::Foosball, prop: "foosball", fx: 2, fy: 1, flip: true, back_wall: false, spots: &[(0, -1, Face::DL), (1, 1, Face::UR)], seats: &[] },
+    GameDef { kind: Play::Pinball, prop: "pinball", fx: 1, fy: 1, flip: false, back_wall: true, spots: &[(0, 1, Face::UR)], seats: &[] },
+    GameDef { kind: Play::AirHockey, prop: "airhockey", fx: 2, fy: 1, flip: true, back_wall: false, spots: &[(-1, 0, Face::DR), (2, 0, Face::UL)], seats: &[] },
+    GameDef { kind: Play::Chess, prop: "chess", fx: 1, fy: 1, flip: false, back_wall: false, spots: &[], seats: &[CAFE_L, CAFE_R] },
+    // played standing a step back from the screen, facing it
+    GameDef { kind: Play::Console, prop: "tv", fx: 1, fy: 1, flip: false, back_wall: true, spots: &[(0, 2, Face::UR)], seats: &[] },
+    // the mat lies on the floor and the player stands on it
+    GameDef { kind: Play::Vr, prop: "vr", fx: 1, fy: 1, flip: false, back_wall: false, spots: &[(0, 0, Face::DR)], seats: &[] },
+    GameDef { kind: Play::Claw, prop: "claw", fx: 1, fy: 1, flip: false, back_wall: true, spots: &[(0, 1, Face::UR)], seats: &[] },
+    GameDef { kind: Play::BoardGame, prop: "boardgame", fx: 1, fy: 1, flip: false, back_wall: false, spots: &[], seats: &[CAFE_L, CAFE_R] },
+    GameDef { kind: Play::Guitar, prop: "amp", fx: 1, fy: 1, flip: false, back_wall: false, spots: &[(1, 0, Face::DR)], seats: &[] },
+    GameDef { kind: Play::Hoops, prop: "hoops", fx: 2, fy: 1, flip: false, back_wall: false, spots: &[(2, 0, Face::UL)], seats: &[] },
+    GameDef { kind: Play::Pool, prop: "pool", fx: 2, fy: 1, flip: false, back_wall: false, spots: &[(-1, 0, Face::DR)], seats: &[] },
+];
+
+/// Builds the office for a seed: the desks on the left, a glass partition, and a lounge of six
+/// columns laid out in zones (the coffee bar along the back wall, ping pong with its
+/// scoreboard, a cafe table, a sofa on its rug, and the games), with a clear path to everything.
 pub fn generate(seed: u32) -> Layout {
     let mut r = Rng::new(seed);
-    let w = 13 + (r.next() * 3.0) as i32;
+    let w = 15 + (r.next() * 4.0) as i32;
     let h = 10 + (r.next() * 2.0) as i32;
-    let px = w - 5;
+    let px = w - 7;
     let l0 = px + 1;
     let theme = *r.pick(&THEMES);
-    let mut b = Builder { w, h, blocked: vec![false; (w * h) as usize], props: Vec::new(), reserved: HashSet::new() };
+    let mut b = Builder { w, h, blocked: vec![false; (w * h) as usize], props: Vec::new(), reserved: HashSet::new(), aisle: HashSet::new() };
 
     // lounge plan first so the partition gap can open onto a free tile
     let flip_lounge = r.next() < 0.5;
@@ -221,9 +342,10 @@ pub fn generate(seed: u32) -> Layout {
         b.reserve(px, y);
         b.reserve(px - 1, y);
         b.reserve(l0, y);
+        b.reserve(l0 + 1, y);
     }
     let door = tile(0, h - 2);
-    for (x, y) in [(0, h - 2), (1, h - 2), (0, h - 3), (1, h - 3)] {
+    for (x, y) in [(0, h - 2), (1, h - 2), (0, h - 3), (1, h - 3), (2, h - 2)] {
         b.reserve(x, y);
     }
     // archive shelves on the left wall
@@ -254,60 +376,6 @@ pub fn generate(seed: u32) -> Layout {
         }
         y += 3;
     }
-    if b.free(px - 1, 0, 1, 1) && px - 1 > bx1 {
-        b.place("server", px - 1, 0, 1, 1, Atlas::Props);
-    } else if b.ok(px - 1, h - 1) {
-        b.place("server", px - 1, h - 1, 1, 1, Atlas::Props);
-    }
-    if b.free(1, 0, 1, 1) {
-        let n = *r.pick(&["plant", "cooler"]);
-        b.place(n, 1, 0, 1, 1, Atlas::Props);
-    }
-    if b.free(0, 0, 1, 1) {
-        b.place("plant", 0, 0, 1, 1, Atlas::Props);
-    }
-    for k in 0..3 {
-        let x = 1 + (r.next() * (px - 2) as f32) as i32;
-        let y = h - 1;
-        if b.ok(x, y) && b.free(x - 1, y, 1, 1) && b.free(x + 1, y, 1, 1) {
-            b.place(if k == 1 { "cooler" } else { "plant" }, x, y, 1, 1, Atlas::Props);
-        }
-    }
-
-    // lounge: coffee bar on the back wall, ping pong, a cafe table with two chairs, a couch
-    let lamp = *r.pick(&["lamp", "plant"]);
-    b.place(lamp, l0, 0, 1, 1, Atlas::Props);
-    b.place("coffee", l0 + 1, 0, 1, 1, Atlas::Props);
-    b.place("fridge", l0 + 2, 0, 1, 1, Atlas::Props);
-    if b.free(l0 + 3, 0, 1, 1) {
-        b.place("arcade", l0 + 3, 0, 1, 1, Atlas::Props);
-    }
-    // the table art runs along the other diagonal, so it is mirrored to match its 2x1 footprint
-    let pp_table = b.place("pingpong", l0 + 1, pp_y, 2, 1, Atlas::Props);
-    b.props[pp_table].flip = true;
-    let cx = l0 + 2;
-    b.place("table", cx, cafe_y, 1, 1, Atlas::Cafe);
-    b.place("chairL", cx, cafe_y - 1, 1, 1, Atlas::Cafe);
-    b.place("chairR", cx - 1, cafe_y, 1, 1, Atlas::Cafe);
-    let mut seats = vec![
-        Seat { kind: SeatKind::Chair, x: cx, y: cafe_y - 1, ax: cx + 1, ay: cafe_y - 1, face: Face::DL, table: Some("cafe"), lift: 4.0, dx: 0.0, depth: None },
-        Seat { kind: SeatKind::Chair, x: cx - 1, y: cafe_y, ax: cx - 2, ay: cafe_y, face: Face::DR, table: Some("cafe"), lift: 4.0, dx: 0.0, depth: None },
-    ];
-    // the sofa art runs along y and faces down-right, so its footprint is 1x2 and both seats face dr
-    let sofa = b.place("sofa", l0, h - 3, 1, 2, Atlas::Props);
-    let sb = (l0 + h - 3) as f32;
-    b.props[sofa].depth = Some(sb + 0.9);
-    for i in 0..2 {
-        seats.push(Seat { kind: SeatKind::Couch, x: l0, y: h - 3 + i, ax: l0 + 1, ay: h - 3 + i, face: Face::DR, table: Some("couch"), lift: 10.0, dx: 2.0, depth: Some(sb + 0.93 + i as f32 * 0.02) });
-    }
-    let flats = vec![Flat { name: "rug", x: l0 as f32 + 0.7, y: h as f32 - 3.3, fx: 2.4, fy: 2.2 }];
-    if b.free(l0 + 3, h - 2, 1, 1) {
-        b.place("beanbag", l0 + 3, h - 2, 1, 1, Atlas::Props);
-    }
-    if b.free(l0 + 3, h - 1, 1, 1) {
-        b.place("plant", l0 + 3, h - 1, 1, 1, Atlas::Props);
-    }
-
     let mut windows = Vec::new();
     let mut y = 1;
     while y < h - 3 {
@@ -316,40 +384,222 @@ pub fn generate(seed: u32) -> Layout {
         }
         y += 3;
     }
+    // the desk side keeps its decor to the corners and the walls between windows
+    if b.free(px - 1, 0, 1, 1) && px - 1 > bx1 {
+        b.place("server", px - 1, 0, 1, 1, Atlas::Props);
+    } else if b.ok(px - 1, h - 1) {
+        b.place("server", px - 1, h - 1, 1, 1, Atlas::Props);
+    }
+    if b.ok(0, 0) {
+        b.place("plant", 0, 0, 1, 1, Atlas::Props);
+    }
+    if b.ok(1, 0) {
+        let n = *r.pick(&["plant", "cooler"]);
+        b.place(n, 1, 0, 1, 1, Atlas::Props);
+    }
+    if b.ok(px - 1, h - 1) {
+        b.place("plant", px - 1, h - 1, 1, 1, Atlas::Props);
+    }
+    // a plant beside the first window that has room under it, never in front of one
+    let in_window = |y: i32| windows.iter().any(|&wy| (y as f32) >= wy - 0.2 && (y as f32) <= wy + 1.8);
+    if let Some(y) = windows.iter().map(|&wy| wy.round() as i32 + 2).find(|&y| !in_window(y) && y < h - 3 && b.ok(0, y)) {
+        b.place("plant", 0, y, 1, 1, Atlas::Props);
+    }
+
+    // the coffee bar: lamp, machine and fridge side by side on the back wall
+    let lamp = *r.pick(&["lamp", "plant"]);
+    b.place(lamp, l0, 0, 1, 1, Atlas::Props);
+    b.place("coffee", l0 + 1, 0, 1, 1, Atlas::Props);
+    b.place("fridge", l0 + 2, 0, 1, 1, Atlas::Props);
+    let (bar, bar_queue) = (tile(l0 + 1, 1), tile(l0 + 1, 2));
+    b.reserve(bar.x, bar.y);
+    b.reserve(bar_queue.x, bar_queue.y);
+    b.reserve(l0 + 2, 1);
+    // ping pong, with the scoreboard against the right wall beside the far player
+    let pp_table = b.place("pingpong", l0 + 2, pp_y, 2, 1, Atlas::Props);
+    b.props[pp_table].flip = true;
+    let (pp_a, pp_b) = (tile(l0 + 1, pp_y), tile(l0 + 4, pp_y));
+    b.reserve(pp_a.x, pp_a.y);
+    b.reserve(pp_b.x, pp_b.y);
+    let scoreboard = b.place("scoreboard", l0 + 5, pp_y, 1, 1, Atlas::Games);
+    // a cafe table with two chairs
+    let cx = l0 + 4;
+    b.place("table", cx, cafe_y, 1, 1, Atlas::Cafe);
+    b.place("chairL", cx, cafe_y - 1, 1, 1, Atlas::Cafe);
+    b.place("chairR", cx - 1, cafe_y, 1, 1, Atlas::Cafe);
+    let mut seats = vec![
+        Seat { kind: SeatKind::Chair, x: cx, y: cafe_y - 1, ax: cx + 1, ay: cafe_y - 1, face: Face::DL, table: Some("cafe"), lift: 4.0, dx: 0.0, depth: None },
+        Seat { kind: SeatKind::Chair, x: cx - 1, y: cafe_y, ax: cx - 2, ay: cafe_y, face: Face::DR, table: Some("cafe"), lift: 4.0, dx: 0.0, depth: None },
+    ];
+    for s in &seats {
+        b.reserve(s.ax, s.ay);
+    }
+    // the sofa against the partition, on its rug; the art runs along y and faces down-right
+    let sofa = b.place("sofa", l0, h - 3, 1, 2, Atlas::Props);
+    let sb = (l0 + h - 3) as f32;
+    b.props[sofa].depth = Some(sb + 0.9);
+    for i in 0..2 {
+        seats.push(Seat { kind: SeatKind::Couch, x: l0, y: h - 3 + i, ax: l0 + 1, ay: h - 3 + i, face: Face::DR, table: Some("couch"), lift: 10.0, dx: 2.0, depth: Some(sb + 0.93 + i as f32 * 0.02) });
+        b.reserve(l0 + 1, h - 3 + i);
+    }
+    let flats = vec![Flat { name: "rug", x: l0 as f32 + 0.7, y: h as f32 - 3.3, fx: 2.4, fy: 2.2 }];
+    if b.ok(l0, h - 1) {
+        b.place("plant", l0, h - 1, 1, 1, Atlas::Props);
+    }
+    // walking room: the row under the bar stays free of furniture (people may stand in it)
+    for x in l0..w {
+        b.aisle.insert((x, 1));
+    }
+
+    // the games: two to four, each where its footprint and players fit and nothing gets cut off
+    let mut order: Vec<usize> = (0..GAMES.len()).collect();
+    for i in (1..order.len()).rev() {
+        order.swap(i, r.below(i + 1));
+    }
+    let want = 2 + r.below(3);
+    let mut targets: Vec<Tile> = desks.iter().chain(&seats).map(Seat::access).collect();
+    targets.extend([pp_a, pp_b, bar, bar_queue]);
+    targets.extend((0..shelf_n).map(|i| tile(1, shelf_start + i)));
+    let mut games = Vec::new();
+    let mut cells: Vec<(i32, i32)> = (0..h).flat_map(|y| (l0..w).map(move |x| (x, y))).collect();
+    for gi in order {
+        if games.len() >= want {
+            break;
+        }
+        let g = &GAMES[gi];
+        for i in (1..cells.len()).rev() {
+            cells.swap(i, r.below(i + 1));
+        }
+        if let Some((nb, prop, spots, new_seats)) = cells.iter().find_map(|&(x, y)| try_game(&b, g, x, y, l0, door, &targets)) {
+            b = nb;
+            targets.extend(spots.iter().map(|s| s.0));
+            targets.extend(new_seats.iter().map(Seat::access));
+            let first = seats.len();
+            seats.extend(new_seats);
+            games.push(GameSpot { kind: g.kind, prop, spots, seats: (first..seats.len()).collect() });
+        }
+    }
+    // corner plants where nothing else went, and nothing stands right beside
+    for (x, y) in [(w - 1, 0), (w - 1, h - 1)] {
+        let alone = [(x - 1, y), (x, y + 1), (x, y - 1)].iter().all(|&(nx, ny)| !b.inb(nx, ny) || !b.blocked[(ny * w + nx) as usize]);
+        if b.ok(x, y) && alone {
+            b.place("plant", x, y, 1, 1, Atlas::Props);
+        }
+    }
+
     let mut sky = [0.0; 24];
     for s in &mut sky {
         *s = r.next();
     }
 
-    let lounge = Lounge { seats, pp_a: tile(l0, pp_y), pp_b: tile(l0 + 3, pp_y), pp_table, bar: tile(l0 + 1, 1), bar_queue: tile(l0 + 1, 2) };
+    let lounge = Lounge { seats, pp_a, pp_b, pp_table, bar, bar_queue, scoreboard, games };
     let mut o = Layout { seed, w, h, px, l0, theme, blocked: b.blocked, props: b.props, flats, glass, door, desks, lounge, bx0, bx1, windows, gap_y, sky };
 
     // every place an avatar has to reach must be reachable from the door; decorations make way
-    let mut targets: Vec<Tile> = o.desks.iter().map(Seat::access).collect();
-    targets.extend(o.lounge.seats.iter().map(Seat::access));
-    targets.extend([o.lounge.pp_a, o.lounge.pp_b, o.lounge.bar, o.lounge.bar_queue]);
-    targets.extend((0..shelf_n).map(|i| tile(1, shelf_start + i)));
     for _ in 0..8 {
         let reach = o.flood(o.door);
         if targets.iter().all(|t| reach.contains(t)) {
             break;
         }
-        let Some(victim) = o.props.iter().position(|p| ["plant", "lamp", "cooler", "beanbag", "server"].contains(&p.name)) else { break };
+        let Some(victim) = o.props.iter().position(|p| ["plant", "lamp", "cooler", "server"].contains(&p.name)) else { break };
         let v = o.props.remove(victim);
-        if victim < o.lounge.pp_table {
-            o.lounge.pp_table -= 1;
-        }
         o.blocked[(v.y * o.w + v.x) as usize] = false;
+        let lz = &mut o.lounge;
+        for i in std::iter::once(&mut lz.pp_table).chain(std::iter::once(&mut lz.scoreboard)).chain(lz.games.iter_mut().map(|g| &mut g.prop)) {
+            if victim < *i {
+                *i -= 1;
+            }
+        }
     }
     o
 }
 
+/// The builder with game `g` placed at (x, y), its prop's index, its players' spots and its
+/// seats, or None when it does not fit there or would cut a place off from the door.
+type Placed = (Builder, usize, Vec<(Tile, Face)>, Vec<Seat>);
+
+fn try_game(b: &Builder, g: &GameDef, x: i32, y: i32, l0: i32, door: Tile, targets: &[Tile]) -> Option<Placed> {
+    let inside = |cx: i32, cy: i32| cx >= l0 && cx < b.w && cy >= 0 && cy < b.h;
+    if g.back_wall != (y == 0) {
+        return None;
+    }
+    let foot: Vec<(i32, i32)> = (0..g.fy).flat_map(|j| (0..g.fx).map(move |i| (x + i, y + j))).collect();
+    if !foot.iter().all(|&(cx, cy)| inside(cx, cy) && b.ok(cx, cy)) {
+        return None;
+    }
+    // a little floor around it, so it does not crowd the furniture next to it
+    let roomy = foot.iter().all(|&(cx, cy)| {
+        [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().all(|&(dx, dy)| {
+            let (nx, ny) = (cx + dx, cy + dy);
+            foot.contains(&(nx, ny)) || !inside(nx, ny) || !b.blocked[(ny * b.w + nx) as usize]
+        })
+    });
+    if !roomy {
+        return None;
+    }
+    let spots: Vec<(Tile, Face)> = g.spots.iter().map(|&(dx, dy, f)| (tile(x + dx, y + dy), f)).collect();
+    // the VR player stands on the mat itself
+    let on_prop = g.kind == Play::Vr;
+    if !spots.iter().all(|(t, _)| inside(t.x, t.y) && (on_prop || b.standable(t.x, t.y))) {
+        return None;
+    }
+    let chairs: Vec<(i32, i32, i32, i32)> = g.seats.iter().map(|c| (x + c.at.0, y + c.at.1, x + c.access.0, y + c.access.1)).collect();
+    if !chairs.iter().all(|&(sx, sy, ax, ay)| inside(sx, sy) && b.ok(sx, sy) && inside(ax, ay) && b.ok(ax, ay)) {
+        return None;
+    }
+    let mut nb = b.clone();
+    let prop = nb.place(g.prop, x, y, g.fx, g.fy, Atlas::Games);
+    nb.props[prop].flip = g.flip;
+    if on_prop {
+        // drawn under whoever stands on it
+        nb.blocked[(y * nb.w + x) as usize] = false;
+        nb.props[prop].depth = Some((x + y) as f32 - 0.4);
+        nb.reserve(x, y);
+    }
+    let table = if g.kind == Play::Chess { "chess" } else { "boardgame" };
+    let mut seats = Vec::new();
+    for (c, &(sx, sy, ax, ay)) in g.seats.iter().zip(&chairs) {
+        nb.place(c.prop, sx, sy, 1, 1, c.atlas);
+        nb.reserve(ax, ay);
+        seats.push(Seat { kind: SeatKind::Chair, x: sx, y: sy, ax, ay, face: c.face, table: Some(table), lift: c.lift, dx: 0.0, depth: None });
+    }
+    for (t, _) in &spots {
+        nb.reserve(t.x, t.y);
+    }
+    // nothing may be cut off from the door
+    let reach = flood(&nb, door);
+    let mut need: Vec<Tile> = targets.to_vec();
+    need.extend(spots.iter().map(|s| s.0));
+    need.extend(seats.iter().map(Seat::access));
+    if !need.iter().all(|t| reach.contains(t)) {
+        return None;
+    }
+    Some((nb, prop, spots, seats))
+}
+
+fn flood(b: &Builder, from: Tile) -> HashSet<Tile> {
+    let mut seen = HashSet::from([from]);
+    let mut q = VecDeque::from([from]);
+    while let Some(c) = q.pop_front() {
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let n = tile(c.x + dx, c.y + dy);
+            if b.inb(n.x, n.y) && !b.blocked[(n.y * b.w + n.x) as usize] && seen.insert(n) {
+                q.push_back(n);
+            }
+        }
+    }
+    seen
+}
+
+#[derive(Clone)]
 struct Builder {
     w: i32,
     h: i32,
     blocked: Vec<bool>,
     props: Vec<Prop>,
     reserved: HashSet<(i32, i32)>,
+    /// floor kept free of furniture that people may still stand on
+    aisle: HashSet<(i32, i32)>,
 }
 
 impl Builder {
@@ -367,6 +617,9 @@ impl Builder {
         self.reserved.insert((x, y));
     }
     fn ok(&self, x: i32, y: i32) -> bool {
+        self.standable(x, y) && !self.aisle.contains(&(x, y))
+    }
+    fn standable(&self, x: i32, y: i32) -> bool {
         self.free(x, y, 1, 1) && !self.reserved.contains(&(x, y))
     }
     fn place(&mut self, name: &'static str, x: i32, y: i32, fx: i32, fy: i32, atlas: Atlas) -> usize {
@@ -395,7 +648,20 @@ mod tests {
             }
             assert!(reach.contains(&o.lounge.pp_a) && reach.contains(&o.lounge.pp_b) && reach.contains(&o.lounge.bar));
             assert!(o.path((o.door.x as f32, o.door.y as f32), o.lounge.bar).is_some());
+            let lz = &o.lounge;
+            assert!((2..=4).contains(&lz.games.len()), "seed {seed}: {} games", lz.games.len());
+            assert_eq!(o.props[lz.scoreboard].name, "scoreboard");
+            for g in &lz.games {
+                assert_eq!(o.props[g.prop].atlas, Atlas::Games, "seed {seed}: {:?} points at its prop", g.kind);
+                assert!(g.spots.iter().all(|s| reach.contains(&s.0)), "seed {seed}: {:?} can be reached", g.kind);
+            }
         }
+        // across offices every game turns up
+        let mut seen = HashSet::new();
+        for seed in 0..300u32 {
+            seen.extend(generate(seed.wrapping_mul(2654435761)).lounge.games.iter().map(|g| g.kind));
+        }
+        assert_eq!(seen.len(), Play::ALL.len(), "{seen:?}");
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! always follows the real work while the in-between moments (coffee, ping pong, the couch)
 //! stay lively on their own.
 
-use super::gen::{generate, Layout, SeatKind};
+use super::gen::{generate, Layout, Play, SeatKind};
 use super::{hash, tile, Face, Rng, Tile};
 use crate::model::{Activity, AgentRef, Event, EventKind};
 use crate::session::{Session, Status};
@@ -22,6 +22,8 @@ pub enum Anim {
     Sit,
     PingPongFront,
     PingPongBack,
+    /// at one of the lounge games
+    Play(Play),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +77,8 @@ enum Tag {
     None,
     Bar,
     BarQueue,
+    /// playing lounge game i
+    Game(u8),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +88,8 @@ enum Until {
     BarFree,
     PartnerOrTimeout,
     GameOver,
+    /// until someone joins lounge game i, or nobody does for a while
+    Partner(u8),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +100,8 @@ enum Done {
     CancelGame,
     EndGame,
     Reported,
+    /// leaves the lounge game it played
+    Unplay,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +110,8 @@ enum Call {
     PlayFront,
     StartGame,
     LeadBreak,
+    /// starts lounge game i if the partner came
+    Play(u8),
 }
 
 #[derive(Debug, Clone)]
@@ -150,6 +160,15 @@ pub struct Avatar {
     pub x: f32,
     pub y: f32,
     pub face: Face,
+    /// the way the body points, in the room (radians, 0 along +x); turns smoothly toward `face`
+    /// or the way it walks
+    pub heading: f32,
+    /// tiles walked since this walk began, which drives the walk cycle
+    pub stride: f32,
+    speed: f32,
+    walk_dir: f32,
+    /// the pose this avatar just left, drawn over the new one as it fades out
+    pub fade: Option<Fade>,
     pub anim: Anim,
     pub t: f32,
     pub phase: f32,
@@ -170,7 +189,58 @@ pub struct Avatar {
     arrive_in: f32,
 }
 
+/// Everything the renderer needs to draw one avatar.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pose {
+    pub anim: Anim,
+    pub phase: f32,
+    pub face: Face,
+    pub heading: f32,
+    pub stride: f32,
+    pub t: f32,
+    pub x: f32,
+    pub y: f32,
+    pub seated: Option<SeatRef>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Fade {
+    pub pose: Pose,
+    pub left: f32,
+    pub dur: f32,
+}
+
+/// Walking pace in tiles per second, how quickly it is reached, and how fast a body turns.
+const WALK_SPEED: f32 = 2.1;
+const ACCEL: f32 = 3.6;
+const TURN: f32 = 8.0;
+
+/// The room angle of a facing.
+pub fn face_angle(f: Face) -> f32 {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    match f {
+        Face::DR => 0.0,
+        Face::DL => FRAC_PI_2,
+        Face::UL => PI,
+        Face::UR => -FRAC_PI_2,
+    }
+}
+
+/// An angle wrapped into (-π, π].
+fn wrap(a: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    let a = (a + PI).rem_euclid(TAU) - PI;
+    if a <= -PI {
+        a + TAU
+    } else {
+        a
+    }
+}
+
 impl Avatar {
+    pub fn pose(&self) -> Pose {
+        Pose { anim: self.anim, phase: self.phase, face: self.face, heading: self.heading, stride: self.stride, t: self.t, x: self.x, y: self.y, seated: self.seated }
+    }
     pub fn say(&mut self, kind: BubbleKind, text: impl Into<String>, dur: f32) {
         let text = text.into();
         self.last_said = Some((kind, text.clone()));
@@ -191,16 +261,88 @@ pub enum GameState {
     Playing,
 }
 
+/// Ping pong timing: one return trip of the ball, and where in each player's swing the paddle
+/// meets it.
+pub const PP_PERIOD: f32 = 1.05;
+pub const PP_HIT_A: f32 = 9.0 / 15.0;
+pub const PP_HIT_B: f32 = 10.0 / 16.0;
+/// The pause after a point before the next serve.
+const PP_REST: f32 = 1.4;
+
 #[derive(Debug, Clone)]
 pub struct Game {
     pub state: GameState,
+    /// player 0 at the near end, player 1 at the far end
     pub a: u32,
     pub b: Option<u32>,
+    /// the rally clock: swings and the ball are timed from here
     pub t0: f32,
     pub end: f32,
     pub score: [u32; 2],
-    next_point: f32,
+    /// who serves this rally, and how many times the ball crosses before the miss
+    pub serve: usize,
+    pub flights: u32,
+    /// no swinging before this: the pause between points
+    pub rest_until: f32,
+    /// when the last point went in, and to whom
+    pub point_at: f32,
+    pub scorer: usize,
+    /// the ball that was missed: who hit it and when it passed the other player
+    pub out: Option<(usize, f32)>,
     since: f32,
+}
+
+/// Where the ball is: crossing from one player to the other (`k` from 0 at the hit to 1 at the
+/// other paddle), or flying on past the player who missed it (`k` beyond 1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Ball {
+    Flight { from: usize, k: f32 },
+    Out { from: usize, k: f32 },
+}
+
+impl Game {
+    /// When the server's paddle first meets the ball.
+    pub fn first_hit(&self) -> f32 {
+        self.t0 + (PP_HIT_A + 0.5 * self.serve as f32) * PP_PERIOD
+    }
+
+    /// When the last ball of this rally reaches the player who will miss it.
+    fn miss_at(&self) -> f32 {
+        self.first_hit() + self.flights as f32 * 0.5 * PP_PERIOD
+    }
+
+    /// Players swing while a rally is on.
+    pub fn swinging(&self, now: f32) -> bool {
+        self.state == GameState::Playing && now >= self.rest_until
+    }
+
+    pub fn ball(&self, now: f32) -> Option<Ball> {
+        if self.state != GameState::Playing {
+            return None;
+        }
+        if let Some((from, at)) = self.out {
+            let k = 1.0 + (now - at) / (0.5 * PP_PERIOD);
+            if k < 1.7 {
+                return Some(Ball::Out { from, k });
+            }
+        }
+        if now < self.rest_until {
+            return None;
+        }
+        let f = (now - self.first_hit()) / (0.5 * PP_PERIOD);
+        if f < 0.0 || f >= self.flights as f32 {
+            return None;
+        }
+        Some(Ball::Flight { from: (self.serve + f as usize) % 2, k: f.fract() })
+    }
+
+    /// Lines the next rally up: `serve` serves after the pause that starts now.
+    fn next_rally(&mut self, now: f32, serve: usize, flights: u32) {
+        self.serve = serve;
+        self.flights = flights;
+        self.rest_until = now + PP_REST;
+        self.t0 = self.rest_until + 0.35 * PP_PERIOD - (PP_HIT_A + 0.5 * serve as f32) * PP_PERIOD;
+    }
 }
 
 /// Everything except the avatars, so an avatar can update while reading shared state.
@@ -209,6 +351,8 @@ pub struct Shared {
     pub elapsed: f32,
     pub cups: u32,
     pub game: Option<Game>,
+    /// the score the board keeps showing after a game
+    pub pp_last: [u32; 2],
     pub desk_owner: Vec<Option<u32>>,
     pub lounge_owner: Vec<Option<u32>>,
     rng: Rng,
@@ -220,6 +364,11 @@ pub struct Shared {
     keep_clear: HashSet<Tile>,
     bar_busy: Vec<(u32, Tag)>,
     chat_t: f32,
+    /// who plays each lounge game: the first player, then the partner
+    pub play: Vec<[Option<u32>; 2]>,
+    play_since: Vec<f32>,
+    /// avatars playing a lounge game right now
+    playing: Vec<u32>,
 }
 
 impl Shared {
@@ -263,6 +412,7 @@ impl World {
     pub fn new(project: &str, seed: u32) -> Self {
         let layout = generate(seed);
         let clear = keep_clear(&layout);
+        let layout_games = layout.lounge.games.len();
         let s = Shared {
             desk_owner: vec![None; layout.desks.len()],
             lounge_owner: vec![None; layout.lounge.seats.len()],
@@ -271,11 +421,15 @@ impl World {
             elapsed: 0.0,
             cups: 0,
             game: None,
+            pp_last: [0, 0],
             reporting: Vec::new(),
             busy_tiles: Vec::new(),
             keep_clear: clear,
             bar_busy: Vec::new(),
             chat_t: 2.0,
+            play: vec![[None, None]; layout_games],
+            play_since: vec![0.0; layout_games],
+            playing: Vec::new(),
         };
         Self { avatars: Vec::new(), s, project: project.to_owned(), next_id: 1 }
     }
@@ -314,6 +468,11 @@ impl World {
             x: door.x as f32,
             y: door.y as f32,
             face: Face::DR,
+            heading: 0.0,
+            stride: 0.0,
+            speed: 0.0,
+            walk_dir: 0.0,
+            fade: None,
             anim: Anim::Stand,
             t: 0.0,
             phase: (h % 1000) as f32 / 333.0,
@@ -467,13 +626,14 @@ impl World {
                 std::iter::once(here).chain(a.q.iter().filter_map(|st| st.target()).map(move |t| (a.id, t)))
             })
             .collect();
-        s.bar_busy = self.avatars.iter().flat_map(|a| a.q.iter().map(move |st| (a.id, st.tag()))).filter(|(_, t)| *t != Tag::None).collect();
+        s.bar_busy = self.avatars.iter().flat_map(|a| a.q.iter().map(move |st| (a.id, st.tag()))).filter(|(_, t)| matches!(t, Tag::Bar | Tag::BarQueue)).collect();
+        s.playing = self.avatars.iter().filter(|a| a.q.front().is_some_and(|st| matches!(st, Step::Act { tag: Tag::Game(_), started: true, .. }))).map(|a| a.id).collect();
 
         // two people at the same table chat now and then
         s.chat_t -= dt;
         if s.chat_t <= 0.0 {
             s.chat_t = 3.5 + s.rng.next() * 2.0;
-            for kind in ["cafe", "couch"] {
+            for kind in ["cafe", "couch", "chess", "boardgame"] {
                 let at: Vec<usize> = (0..s.lounge_owner.len())
                     .filter(|&i| s.layout.lounge.seats[i].table == Some(kind))
                     .filter_map(|i| s.lounge_owner[i].map(|id| (i, id)))
@@ -487,22 +647,30 @@ impl World {
                 }
             }
         }
-        // rallies end now and then; first to 11 wins
+        // a rally ends when the ball gets past someone: the point goes in as it passes, then a
+        // short pause and the scorer serves; first to 11 wins
         if let Some(g) = s.game.as_mut() {
-            if g.state == GameState::Playing {
-                g.next_point -= dt;
-                if g.next_point <= 0.0 {
-                    let side = usize::from(s.rng.next() >= 0.5);
-                    g.score[side] += 1;
-                    g.next_point = 2.2 + s.rng.next() * 3.5;
-                    if g.score[side] >= 11 {
-                        g.end = s.elapsed;
-                        let winner = if side == 0 { Some(g.a) } else { g.b };
-                        let line = *s.rng.pick(&["Good game!", "Rematch later?", "That was close"]);
-                        if let Some(w) = self.avatars.iter_mut().find(|a| Some(a.id) == winner) {
-                            w.say(BubbleKind::Say, line, 2.6);
-                        }
-                    }
+            if g.state == GameState::Playing && g.score[0] < 11 && g.score[1] < 11 && s.elapsed >= g.miss_at() && s.elapsed >= g.rest_until {
+                let side = (g.serve + g.flights as usize + 1) % 2;
+                g.score[side] += 1;
+                s.pp_last = g.score;
+                g.out = Some((side, g.miss_at()));
+                g.point_at = s.elapsed;
+                g.scorer = side;
+                let flights = 3 + s.rng.below(8) as u32;
+                g.next_rally(s.elapsed, side, flights);
+                let who = if side == 0 { Some(g.a) } else { g.b };
+                let line = if g.score[side] >= 11 {
+                    // a moment to celebrate before everyone heads off
+                    g.end = s.elapsed + 1.8;
+                    Some(*s.rng.pick(&["Good game!", "Rematch later?", "That was close"]))
+                } else if s.rng.next() < 0.35 {
+                    Some("Point!")
+                } else {
+                    None
+                };
+                if let (Some(line), Some(w)) = (line, self.avatars.iter_mut().find(|a| Some(a.id) == who)) {
+                    w.say(BubbleKind::Say, line, 1.6);
                 }
             }
         }
@@ -602,6 +770,7 @@ fn interrupt(a: &mut Avatar, s: &mut Shared) {
         }
     }
     a.q.clear();
+    release_play(a, s);
     if !matches!(a.seated, Some(SeatRef::Desk(_))) {
         stand_up(a, s);
     }
@@ -652,6 +821,7 @@ fn keep_clear(o: &Layout) -> HashSet<Tile> {
         k.extend([tile(q.x, q.y), q.access()]);
     }
     k.extend([lz.bar, lz.bar_queue, lz.pp_a, lz.pp_b, o.door]);
+    k.extend(lz.games.iter().flat_map(|g| g.spots.iter().map(|s| s.0)));
     k
 }
 
@@ -722,7 +892,7 @@ fn lead_break(a: &mut Avatar, s: &mut Shared) {
 
 fn free_lounge_seat(a: &Avatar, s: &mut Shared, kind: Option<&str>) -> Option<usize> {
     let c: Vec<usize> = (0..s.lounge_owner.len())
-        .filter(|&i| s.lounge_owner[i].is_none() && kind.is_none_or(|k| s.layout.lounge.seats[i].table == Some(k)))
+        .filter(|&i| s.lounge_owner[i].is_none() && kind.map_or(matches!(s.layout.lounge.seats[i].table, Some("cafe" | "couch")), |k| s.layout.lounge.seats[i].table == Some(k)))
         .collect();
     if c.is_empty() {
         return None;
@@ -746,9 +916,12 @@ fn brew(s: &Shared) -> [Step; 2] {
 
 /// One person at the machine, at most one waiting behind them; anyone else skips the coffee.
 fn coffee_break(a: &mut Avatar, s: &mut Shared, seat: usize, think: Option<&str>) {
+    // claimed at once, so someone else planning in the same frame sees it taken
     if !bar_busy(s, a.id, Tag::Bar) && !bar_busy(s, a.id, Tag::BarQueue) {
         a.q.extend(brew(s));
+        s.bar_busy.push((a.id, Tag::Bar));
     } else if !bar_busy(s, a.id, Tag::BarQueue) {
+        s.bar_busy.push((a.id, Tag::BarQueue));
         a.q.push_back(Step::Walk { to: s.layout.lounge.bar_queue, label: "Queueing for coffee".into(), path: None, tag: Tag::BarQueue });
         a.q.push_back(Step::Wait { anim: Anim::Stand, sit: None, face: Some(Face::UR), label: "Waiting for the coffee machine".into(), until: Until::BarFree, started: false, bubble: None, done: Done::None });
         a.q.push_back(Step::Call(Call::Brew));
@@ -786,6 +959,7 @@ fn idle(a: &mut Avatar, s: &mut Shared, idle_count: usize, first_idle: Option<u3
         a.leaving = true;
         stand_up(a, s);
         release_desk(a, s);
+        release_play(a, s);
         a.q.push_back(Step::Walk { to: s.layout.door, label: "Clocking out".into(), path: None, tag: Tag::None });
         a.q.push_back(Step::Leave);
         return;
@@ -805,12 +979,15 @@ fn idle(a: &mut Avatar, s: &mut Shared, idle_count: usize, first_idle: Option<u3
         }
         // start a game only when someone else is free to play too
         if s.game.is_none() && idle_count >= 2 && s.rng.next() < 0.55 {
-            s.game = Some(Game { state: GameState::Waiting, a: a.id, b: None, t0: 0.0, end: 0.0, score: [0, 0], next_point: 0.0, since: s.elapsed });
+            s.game = Some(Game { state: GameState::Waiting, a: a.id, b: None, t0: 0.0, end: 0.0, score: [0, 0], serve: 0, flights: 0, rest_until: 0.0, point_at: -10.0, scorer: 0, out: None, since: s.elapsed });
             a.q.push_back(Step::Walk { to: s.layout.lounge.pp_a, label: "Off to the ping pong table".into(), path: None, tag: Tag::None });
             a.q.push_back(Step::Wait { anim: Anim::Stand, sit: None, face: Some(Face::DR), label: "Waiting for a ping pong partner".into(), until: Until::PartnerOrTimeout, started: false, bubble: Some((BubbleKind::Say, "Ping pong, anyone?".into())), done: Done::CancelGame });
             a.q.push_back(Step::Call(Call::PlayFront));
             return;
         }
+    }
+    if !a.lead && try_play(a, s, idle_count) {
+        return;
     }
     if let Some(seat) = free_lounge_seat(a, s, None) {
         coffee_break(a, s, seat, None);
@@ -853,6 +1030,80 @@ fn finish(a: &mut Avatar, s: &mut Shared, done: Done) {
             a.mode = Mode::Lounge;
             a.idle_since = Some(s.elapsed);
         }
+        Done::Unplay => {
+            release_play(a, s);
+            stand_up(a, s);
+        }
+    }
+}
+
+/// Finishes a step; whoever it stood up shows standing from this frame on, not the seat's pose.
+fn finish_standing(a: &mut Avatar, s: &mut Shared, done: Done) {
+    let was = a.seated.is_some();
+    finish(a, s, done);
+    if was && a.seated.is_none() {
+        a.anim = Anim::Stand;
+    }
+}
+
+fn release_play(a: &Avatar, s: &mut Shared) {
+    for p in &mut s.play {
+        for slot in p.iter_mut() {
+            if *slot == Some(a.id) {
+                *slot = None;
+            }
+        }
+    }
+}
+
+/// Free time at one of the lounge games: join someone waiting for a partner, or start a game
+/// nobody is at (the two-player ones only when someone else is free to come).
+fn try_play(a: &mut Avatar, s: &mut Shared, idle_count: usize) -> bool {
+    let n = s.layout.lounge.games.len();
+    for gi in 0..n {
+        let pair = s.layout.lounge.games[gi].kind.pair();
+        if pair && s.play[gi][0].is_some_and(|p| p != a.id) && s.play[gi][1].is_none() && s.rng.next() < 0.75 {
+            s.play[gi][1] = Some(a.id);
+            plan_play(a, s, gi, 1);
+            return true;
+        }
+    }
+    if s.rng.next() > 0.55 {
+        return false;
+    }
+    let free: Vec<usize> = (0..n).filter(|&i| s.play[i] == [None, None] && (!s.layout.lounge.games[i].kind.pair() || idle_count >= 2)).collect();
+    if free.is_empty() {
+        return false;
+    }
+    let gi = free[s.rng.below(free.len())];
+    s.play[gi][0] = Some(a.id);
+    s.play_since[gi] = s.elapsed;
+    plan_play(a, s, gi, 0);
+    true
+}
+
+fn plan_play(a: &mut Avatar, s: &mut Shared, gi: usize, slot: usize) {
+    let g = s.layout.lounge.games[gi].clone();
+    let (to, sit, face) = match g.seats.get(slot).or(g.seats.first()) {
+        Some(&seat) => {
+            s.lounge_owner[seat] = Some(a.id);
+            (s.layout.lounge.seats[seat].access(), Some(SeatRef::Lounge(seat)), None)
+        }
+        None => {
+            let (t, f) = g.spots[slot.min(g.spots.len() - 1)];
+            (t, None, Some(f))
+        }
+    };
+    s.busy_tiles.push((a.id, to));
+    let label = g.kind.label();
+    a.q.push_back(Step::Walk { to, label: "Off to play".into(), path: None, tag: Tag::None });
+    if g.kind.pair() && slot == 0 {
+        let wait = if sit.is_some() { Anim::Sit } else { Anim::Stand };
+        a.q.push_back(Step::Wait { anim: wait, sit, face, label: "Waiting for someone to play with".into(), until: Until::Partner(gi as u8), started: false, bubble: Some((BubbleKind::Say, "Anyone up for a game?".into())), done: Done::None });
+        a.q.push_back(Step::Call(Call::Play(gi as u8)));
+    } else {
+        let dur = 18.0 + s.rng.next() * 18.0;
+        a.q.push_back(Step::Act { anim: Anim::Play(g.kind), sit, face, left: dur, started: false, bubble: None, label: label.into(), tag: Tag::Game(gi as u8), done: Done::Unplay });
     }
 }
 
@@ -861,6 +1112,30 @@ fn update(a: &mut Avatar, s: &mut Shared, dt: f32, idle_count: usize, first_idle
         a.arrive_in -= dt;
         return;
     }
+    let before = a.pose();
+    act(a, s, dt, idle_count, first_idle, game_waiting);
+    // the body turns toward where it is going or what it faces, never snapping round
+    let target = if a.anim == Anim::Walk { a.walk_dir } else { face_angle(a.face) };
+    if a.seated.is_some() {
+        a.heading = target;
+    } else {
+        let d = wrap(target - a.heading);
+        a.heading = wrap(a.heading + d.clamp(-TURN * dt, TURN * dt));
+    }
+    if let Some(f) = a.fade.as_mut() {
+        f.left -= dt;
+        if f.left <= 0.0 {
+            a.fade = None;
+        }
+    }
+    // a change of pose cross-fades instead of popping
+    if (before.anim != a.anim || before.seated != a.seated) && a.alpha > 0.0 {
+        let dur = if before.seated.is_some() || a.seated.is_some() { 0.26 } else { 0.2 };
+        a.fade = Some(Fade { pose: before, left: dur, dur });
+    }
+}
+
+fn act(a: &mut Avatar, s: &mut Shared, dt: f32, idle_count: usize, first_idle: Option<u32>, game_waiting: Option<u32>) {
     if a.alpha < 1.0 && !a.leaving {
         a.alpha = (a.alpha + dt * 3.0).min(1.0);
     }
@@ -901,11 +1176,26 @@ fn update(a: &mut Avatar, s: &mut Shared, dt: f32, idle_count: usize, first_idle
                     s.layout.path((a.x, a.y), to).unwrap_or_default()
                 }
             };
+            if a.anim != Anim::Walk {
+                // a walk starts from the stride's first frame, at a slow first step
+                a.stride = 0.0;
+                a.speed = 0.35;
+            }
             a.anim = Anim::Walk;
-            walk_along(a, &mut path, dt * 2.1);
+            // ease in, and slow down over the last stretch so the stop is not abrupt
+            let mut left = 0.0;
+            let mut at = (a.x, a.y);
+            for t in &path {
+                left += ((t.x as f32 - at.0).powi(2) + (t.y as f32 - at.1).powi(2)).sqrt();
+                at = (t.x as f32, t.y as f32);
+            }
+            // smoothstep-like: gentle at both ends of the walk
+            a.speed = (a.speed + ACCEL * dt * (1.0 - a.speed / WALK_SPEED).max(0.25)).min(WALK_SPEED).min((1.6 * ACCEL * left).sqrt().max(0.45));
+            a.stride += walk_along(a, &mut path, a.speed * dt);
             if path.is_empty() {
                 a.x = a.x.round();
                 a.y = a.y.round();
+                a.speed = 0.0;
                 a.q.pop_front();
             } else if let Some(Step::Walk { path: slot, .. }) = a.q.front_mut() {
                 *slot = Some(path);
@@ -923,7 +1213,7 @@ fn update(a: &mut Avatar, s: &mut Shared, dt: f32, idle_count: usize, first_idle
             a.anim = anim;
             if over {
                 a.q.pop_front();
-                finish(a, s, d);
+                finish_standing(a, s, d);
             }
         }
         Step::Wait { started, sit, face, bubble, label, .. } => {
@@ -943,11 +1233,19 @@ fn update(a: &mut Avatar, s: &mut Shared, dt: f32, idle_count: usize, first_idle
                     _ => true,
                 },
                 Until::GameOver => s.game.as_ref().is_none_or(|g| g.state != GameState::Playing || s.elapsed > g.end),
+                Until::Partner(gi) => {
+                    let gi = *gi as usize;
+                    let waited = s.elapsed - s.play_since[gi];
+                    match s.play[gi][1] {
+                        Some(p) => s.playing.contains(&p) || waited > 40.0,
+                        None => waited > 16.0,
+                    }
+                }
             };
             if over {
                 let d = *done;
                 a.q.pop_front();
-                finish(a, s, d);
+                finish_standing(a, s, d);
             }
         }
         Step::Call(c) => {
@@ -967,18 +1265,32 @@ fn update(a: &mut Avatar, s: &mut Shared, dt: f32, idle_count: usize, first_idle
                 Call::StartGame => {
                     let ready = s.game.as_ref().is_some_and(|g| g.b == Some(a.id) && g.state == GameState::Joining);
                     if ready {
-                        let (end, next) = (40.0 + s.rng.next() * 30.0, 2.0 + s.rng.next() * 3.0);
+                        let (end, flights, serve) = (150.0 + s.rng.next() * 60.0, 3 + s.rng.below(8) as u32, s.rng.below(2));
                         if let Some(g) = s.game.as_mut() {
                             g.state = GameState::Playing;
-                            g.t0 = s.elapsed;
                             g.end = s.elapsed + end;
                             g.score = [0, 0];
-                            g.next_point = next;
+                            g.out = None;
+                            g.point_at = -10.0;
+                            g.next_rally(s.elapsed - PP_REST + 0.4, serve, flights);
                         }
                         a.q.push_back(Step::Wait { anim: Anim::PingPongBack, sit: None, face: Some(Face::UL), label: "Ping pong".into(), until: Until::GameOver, started: false, bubble: None, done: Done::EndGame });
                     }
                 }
                 Call::LeadBreak => lead_break(a, s),
+                Call::Play(gi) => {
+                    let g = gi as usize;
+                    let kind = s.layout.lounge.games[g].kind;
+                    if s.play[g][1].is_some() {
+                        let dur = 22.0 + s.rng.next() * 16.0;
+                        let (sit, face) = (a.seated, if a.seated.is_some() { None } else { Some(a.face) });
+                        a.q.push_back(Step::Act { anim: Anim::Play(kind), sit, face, left: dur, started: false, bubble: None, label: kind.label().into(), tag: Tag::Game(gi), done: Done::Unplay });
+                    } else {
+                        // nobody came
+                        release_play(a, s);
+                        stand_up(a, s);
+                    }
+                }
             }
         }
         Step::Leave => {
@@ -992,28 +1304,64 @@ fn update(a: &mut Avatar, s: &mut Shared, dt: f32, idle_count: usize, first_idle
     }
 }
 
-/// Moves `budget` tiles along the path, turning to face each step.
-fn walk_along(a: &mut Avatar, path: &mut Vec<Tile>, mut budget: f32) {
-    while budget > 0.0 {
-        let Some(n) = path.first().copied() else { break };
-        let (dx, dy) = (n.x as f32 - a.x, n.y as f32 - a.y);
+/// How far ahead along the path a walker aims, in tiles: corners become short curves instead
+/// of sharp turns on a tile's centre.
+const LOOK: f32 = 0.6;
+
+/// The point `dist` tiles along the path from where the avatar stands.
+fn ahead(a: &Avatar, path: &[Tile], dist: f32) -> (f32, f32) {
+    let (mut x, mut y, mut left) = (a.x, a.y, dist);
+    for t in path {
+        let (dx, dy) = (t.x as f32 - x, t.y as f32 - y);
         let d = (dx * dx + dy * dy).sqrt();
-        if dx.abs() > 0.01 {
-            a.face = if dx > 0.0 { Face::DR } else { Face::UL };
-        } else if dy.abs() > 0.01 {
-            a.face = if dy > 0.0 { Face::DL } else { Face::UR };
+        if d >= left && d > 0.0 {
+            return (x + dx / d * left, y + dy / d * left);
         }
-        if d <= budget {
+        (x, y, left) = (t.x as f32, t.y as f32, left - d);
+    }
+    (x, y)
+}
+
+/// Moves up to `budget` tiles along the path, facing the way it goes, and says how far it went.
+/// It steers at a point a little ahead, so it rounds corners, and ends exactly on the last tile.
+fn walk_along(a: &mut Avatar, path: &mut Vec<Tile>, budget: f32) -> f32 {
+    let mut left = budget;
+    while left > 1e-5 {
+        let Some(&n) = path.first() else { break };
+        let (nx, ny) = (n.x as f32 - a.x, n.y as f32 - a.y);
+        let near = (nx * nx + ny * ny).sqrt();
+        if path.len() > 1 && near < LOOK * 0.5 {
+            // close enough to this corner: the curve takes it from here
+            path.remove(0);
+            continue;
+        }
+        let (tx, ty) = if path.len() == 1 { (n.x as f32, n.y as f32) } else { ahead(a, path, LOOK) };
+        let (dx, dy) = (tx - a.x, ty - a.y);
+        let d = (dx * dx + dy * dy).sqrt();
+        if d > 0.01 {
+            a.walk_dir = dy.atan2(dx);
+            a.face = if dx.abs() >= dy.abs() {
+                if dx > 0.0 { Face::DR } else { Face::UL }
+            } else if dy > 0.0 {
+                Face::DL
+            } else {
+                Face::UR
+            };
+        }
+        if path.len() == 1 && d <= left {
             a.x = n.x as f32;
             a.y = n.y as f32;
-            path.remove(0);
-            budget -= d;
-        } else {
-            a.x += dx / d * budget;
-            a.y += dy / d * budget;
-            budget = 0.0;
+            path.clear();
+            left -= d;
+            break;
         }
+        // small steps, so the curve stays a curve at any speed
+        let step = left.min(0.05).min(d.max(1e-3));
+        a.x += dx / d.max(1e-3) * step;
+        a.y += dy / d.max(1e-3) * step;
+        left -= step;
     }
+    budget - left
 }
 
 fn seated_anim(a: &Avatar) -> Anim {
@@ -1121,10 +1469,13 @@ mod tests {
                     continue;
                 }
                 let mut spots = HashSet::new();
-                for a in w.avatars.iter().filter(|a| a.anim != Anim::Walk && a.seated.is_none() && a.alpha >= 1.0 && !a.leaving) {
+                // someone with nothing queued is between steps and plans the next one this frame
+                for a in w.avatars.iter().filter(|a| a.anim != Anim::Walk && a.seated.is_none() && a.alpha >= 1.0 && !a.leaving && !a.q.is_empty()) {
                     let t = tile(a.x.round() as i32, a.y.round() as i32);
                     assert!(spots.insert(t), "seed {seed} frame {frame}: two people on {t:?}");
-                    assert!(!w.s.keep_clear.contains(&t) || w.s.layout.lounge.pp_a == t || w.s.layout.lounge.pp_b == t || w.s.layout.lounge.bar == t || w.s.layout.lounge.bar_queue == t, "seed {seed} frame {frame}: {} stands inside a workstation at {t:?}", a.name);
+                    let lz = &w.s.layout.lounge;
+                    let allowed = [lz.pp_a, lz.pp_b, lz.bar, lz.bar_queue].contains(&t) || lz.games.iter().any(|g| g.spots.iter().any(|s| s.0 == t));
+                    assert!(!w.s.keep_clear.contains(&t) || allowed, "seed {seed} frame {frame}: {} stands inside a workstation at {t:?}", a.name);
                 }
             }
         }

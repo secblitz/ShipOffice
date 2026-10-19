@@ -110,6 +110,12 @@ impl View {
         }
     }
 
+    /// A direction in the room on the floor as seen from the camera: how far it points to the
+    /// right and how far toward the viewer, before the tilt foreshortens it.
+    pub fn ground(&self, vx: f32, vy: f32) -> (f32, f32) {
+        (vx * self.cos - vy * self.sin, vx * self.sin + vy * self.cos)
+    }
+
     /// A direction in the room as it reads on screen: (toward the viewer, to the right).
     pub fn facing(&self, f: Face) -> (bool, bool) {
         let (vx, vy) = match f {

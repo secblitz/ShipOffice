@@ -1004,6 +1004,1791 @@
    },
    "char": 6,
    "mask": "anim_read_c6_mask.png"
+  },
+  "stand8": {
+   "file": "anim_stand8.webp",
+   "fw": 128,
+   "fh": 227,
+   "frames": 5,
+   "cols": 5,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 0,
+   "mask": "anim_stand8_mask.png",
+   "dirs": [
+    "s",
+    "se",
+    "e",
+    "ne",
+    "n"
+   ]
+  },
+  "walk8_s": {
+   "file": "anim_walk8_s.webp",
+   "fw": 129,
+   "fh": 227,
+   "frames": 22,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 0,
+   "mask": "anim_walk8_s_mask.png",
+   "fps": 24,
+   "seam": 0.22
+  },
+  "walk8_se": {
+   "file": "anim_walk8_se.webp",
+   "fw": 131,
+   "fh": 227,
+   "frames": 24,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 0,
+   "mask": "anim_walk8_se_mask.png",
+   "fps": 24,
+   "seam": 0.22
+  },
+  "walk8_e": {
+   "file": "anim_walk8_e.webp",
+   "fw": 127,
+   "fh": 227,
+   "frames": 26,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 0,
+   "mask": "anim_walk8_e_mask.png",
+   "fps": 24,
+   "seam": 0.34
+  },
+  "walk8_ne": {
+   "file": "anim_walk8_ne.webp",
+   "fw": 119,
+   "fh": 227,
+   "frames": 24,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 0,
+   "mask": "anim_walk8_ne_mask.png",
+   "fps": 24,
+   "seam": 0.2
+  },
+  "walk8_n": {
+   "file": "anim_walk8_n.webp",
+   "fw": 131,
+   "fh": 227,
+   "frames": 23,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 0,
+   "mask": "anim_walk8_n_mask.png",
+   "fps": 24,
+   "seam": 0.24
+  },
+  "stand8_c1": {
+   "file": "anim_stand8_c1.webp",
+   "fw": 123,
+   "fh": 227,
+   "frames": 5,
+   "cols": 5,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 1,
+   "mask": "anim_stand8_c1_mask.png",
+   "dirs": [
+    "s",
+    "se",
+    "e",
+    "ne",
+    "n"
+   ]
+  },
+  "walk8_s_c1": {
+   "file": "anim_walk8_s_c1.webp",
+   "fw": 94,
+   "fh": 227,
+   "frames": 21,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 1,
+   "mask": "anim_walk8_s_c1_mask.png",
+   "fps": 24,
+   "seam": 0.28
+  },
+  "walk8_se_c1": {
+   "file": "anim_walk8_se_c1.webp",
+   "fw": 122,
+   "fh": 227,
+   "frames": 22,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 1,
+   "mask": "anim_walk8_se_c1_mask.png",
+   "fps": 24,
+   "seam": 0.26
+  },
+  "walk8_e_c1": {
+   "file": "anim_walk8_e_c1.webp",
+   "fw": 138,
+   "fh": 227,
+   "frames": 29,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 1,
+   "mask": "anim_walk8_e_c1_mask.png",
+   "fps": 24,
+   "seam": 0.18
+  },
+  "walk8_ne_c1": {
+   "file": "anim_walk8_ne_c1.webp",
+   "fw": 114,
+   "fh": 227,
+   "frames": 21,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 1,
+   "mask": "anim_walk8_ne_c1_mask.png",
+   "fps": 24,
+   "seam": 0.12
+  },
+  "walk8_n_c1": {
+   "file": "anim_walk8_n_c1.webp",
+   "fw": 100,
+   "fh": 227,
+   "frames": 21,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 1,
+   "mask": "anim_walk8_n_c1_mask.png",
+   "fps": 24,
+   "seam": 0.24
+  },
+  "stand8_c2": {
+   "file": "anim_stand8_c2.webp",
+   "fw": 106,
+   "fh": 227,
+   "frames": 5,
+   "cols": 5,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 2,
+   "mask": "anim_stand8_c2_mask.png",
+   "dirs": [
+    "s",
+    "se",
+    "e",
+    "ne",
+    "n"
+   ]
+  },
+  "walk8_s_c2": {
+   "file": "anim_walk8_s_c2.webp",
+   "fw": 114,
+   "fh": 227,
+   "frames": 24,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 2,
+   "mask": "anim_walk8_s_c2_mask.png",
+   "fps": 24,
+   "seam": 1.59
+  },
+  "walk8_se_c2": {
+   "file": "anim_walk8_se_c2.webp",
+   "fw": 143,
+   "fh": 227,
+   "frames": 23,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 2,
+   "mask": "anim_walk8_se_c2_mask.png",
+   "fps": 24,
+   "seam": 0.19
+  },
+  "walk8_e_c2": {
+   "file": "anim_walk8_e_c2.webp",
+   "fw": 118,
+   "fh": 227,
+   "frames": 31,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 2,
+   "mask": "anim_walk8_e_c2_mask.png",
+   "fps": 24,
+   "seam": 0.24
+  },
+  "walk8_ne_c2": {
+   "file": "anim_walk8_ne_c2.webp",
+   "fw": 124,
+   "fh": 227,
+   "frames": 24,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 2,
+   "mask": "anim_walk8_ne_c2_mask.png",
+   "fps": 24,
+   "seam": 0.27
+  },
+  "walk8_n_c2": {
+   "file": "anim_walk8_n_c2.webp",
+   "fw": 119,
+   "fh": 227,
+   "frames": 22,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 2,
+   "mask": "anim_walk8_n_c2_mask.png",
+   "fps": 24,
+   "seam": 0.37
+  },
+  "stand8_c3": {
+   "file": "anim_stand8_c3.webp",
+   "fw": 105,
+   "fh": 227,
+   "frames": 5,
+   "cols": 5,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 3,
+   "mask": "anim_stand8_c3_mask.png",
+   "dirs": [
+    "s",
+    "se",
+    "e",
+    "ne",
+    "n"
+   ]
+  },
+  "walk8_s_c3": {
+   "file": "anim_walk8_s_c3.webp",
+   "fw": 119,
+   "fh": 227,
+   "frames": 24,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 3,
+   "mask": "anim_walk8_s_c3_mask.png",
+   "fps": 24,
+   "seam": 0.28
+  },
+  "walk8_se_c3": {
+   "file": "anim_walk8_se_c3.webp",
+   "fw": 133,
+   "fh": 227,
+   "frames": 25,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 3,
+   "mask": "anim_walk8_se_c3_mask.png",
+   "fps": 24,
+   "seam": 0.11
+  },
+  "walk8_e_c3": {
+   "file": "anim_walk8_e_c3.webp",
+   "fw": 112,
+   "fh": 227,
+   "frames": 35,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 3,
+   "mask": "anim_walk8_e_c3_mask.png",
+   "fps": 24,
+   "seam": 0.24
+  },
+  "walk8_ne_c3": {
+   "file": "anim_walk8_ne_c3.webp",
+   "fw": 126,
+   "fh": 227,
+   "frames": 23,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 3,
+   "mask": "anim_walk8_ne_c3_mask.png",
+   "fps": 24,
+   "seam": 0.19
+  },
+  "walk8_n_c3": {
+   "file": "anim_walk8_n_c3.webp",
+   "fw": 115,
+   "fh": 227,
+   "frames": 26,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 3,
+   "mask": "anim_walk8_n_c3_mask.png",
+   "fps": 24,
+   "seam": 0.49
+  },
+  "stand8_c4": {
+   "file": "anim_stand8_c4.webp",
+   "fw": 101,
+   "fh": 227,
+   "frames": 5,
+   "cols": 5,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 4,
+   "mask": "anim_stand8_c4_mask.png",
+   "dirs": [
+    "s",
+    "se",
+    "e",
+    "ne",
+    "n"
+   ]
+  },
+  "walk8_s_c4": {
+   "file": "anim_walk8_s_c4.webp",
+   "fw": 111,
+   "fh": 227,
+   "frames": 22,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 4,
+   "mask": "anim_walk8_s_c4_mask.png",
+   "fps": 24,
+   "seam": 1.02
+  },
+  "walk8_se_c4": {
+   "file": "anim_walk8_se_c4.webp",
+   "fw": 123,
+   "fh": 228,
+   "frames": 36,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 4,
+   "mask": "anim_walk8_se_c4_mask.png",
+   "fps": 24,
+   "seam": 0.2
+  },
+  "walk8_e_c4": {
+   "file": "anim_walk8_e_c4.webp",
+   "fw": 115,
+   "fh": 227,
+   "frames": 32,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 4,
+   "mask": "anim_walk8_e_c4_mask.png",
+   "fps": 24,
+   "seam": 0.36
+  },
+  "walk8_ne_c4": {
+   "file": "anim_walk8_ne_c4.webp",
+   "fw": 112,
+   "fh": 227,
+   "frames": 24,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 4,
+   "mask": "anim_walk8_ne_c4_mask.png",
+   "fps": 24,
+   "seam": 0.96
+  },
+  "walk8_n_c4": {
+   "file": "anim_walk8_n_c4.webp",
+   "fw": 115,
+   "fh": 227,
+   "frames": 20,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 4,
+   "mask": "anim_walk8_n_c4_mask.png",
+   "fps": 24,
+   "seam": 1.22
+  },
+  "stand8_c5": {
+   "file": "anim_stand8_c5.webp",
+   "fw": 122,
+   "fh": 227,
+   "frames": 5,
+   "cols": 5,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 5,
+   "mask": "anim_stand8_c5_mask.png",
+   "dirs": [
+    "s",
+    "se",
+    "e",
+    "ne",
+    "n"
+   ]
+  },
+  "walk8_s_c5": {
+   "file": "anim_walk8_s_c5.webp",
+   "fw": 128,
+   "fh": 227,
+   "frames": 26,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 5,
+   "mask": "anim_walk8_s_c5_mask.png",
+   "fps": 24,
+   "seam": 1.47
+  },
+  "walk8_se_c5": {
+   "file": "anim_walk8_se_c5.webp",
+   "fw": 131,
+   "fh": 227,
+   "frames": 23,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 5,
+   "mask": "anim_walk8_se_c5_mask.png",
+   "fps": 24,
+   "seam": 0.23
+  },
+  "walk8_e_c5": {
+   "file": "anim_walk8_e_c5.webp",
+   "fw": 117,
+   "fh": 227,
+   "frames": 38,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 5,
+   "mask": "anim_walk8_e_c5_mask.png",
+   "fps": 24,
+   "seam": 1.88
+  },
+  "walk8_ne_c5": {
+   "file": "anim_walk8_ne_c5.webp",
+   "fw": 125,
+   "fh": 227,
+   "frames": 22,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 5,
+   "mask": "anim_walk8_ne_c5_mask.png",
+   "fps": 24,
+   "seam": 0.42
+  },
+  "walk8_n_c5": {
+   "file": "anim_walk8_n_c5.webp",
+   "fw": 127,
+   "fh": 227,
+   "frames": 23,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 5,
+   "mask": "anim_walk8_n_c5_mask.png",
+   "fps": 24,
+   "seam": 1.18
+  },
+  "stand8_c6": {
+   "file": "anim_stand8_c6.webp",
+   "fw": 114,
+   "fh": 227,
+   "frames": 5,
+   "cols": 5,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 6,
+   "mask": "anim_stand8_c6_mask.png",
+   "dirs": [
+    "s",
+    "se",
+    "e",
+    "ne",
+    "n"
+   ]
+  },
+  "walk8_s_c6": {
+   "file": "anim_walk8_s_c6.webp",
+   "fw": 124,
+   "fh": 227,
+   "frames": 23,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 6,
+   "mask": "anim_walk8_s_c6_mask.png",
+   "fps": 24,
+   "seam": 0.61
+  },
+  "walk8_se_c6": {
+   "file": "anim_walk8_se_c6.webp",
+   "fw": 120,
+   "fh": 227,
+   "frames": 23,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 6,
+   "mask": "anim_walk8_se_c6_mask.png",
+   "fps": 24,
+   "seam": 0.23
+  },
+  "walk8_e_c6": {
+   "file": "anim_walk8_e_c6.webp",
+   "fw": 117,
+   "fh": 227,
+   "frames": 21,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 6,
+   "mask": "anim_walk8_e_c6_mask.png",
+   "fps": 24,
+   "seam": 0.12
+  },
+  "walk8_ne_c6": {
+   "file": "anim_walk8_ne_c6.webp",
+   "fw": 125,
+   "fh": 227,
+   "frames": 24,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 6,
+   "mask": "anim_walk8_ne_c6_mask.png",
+   "fps": 24,
+   "seam": 1.34
+  },
+  "walk8_n_c6": {
+   "file": "anim_walk8_n_c6.webp",
+   "fw": 125,
+   "fh": 227,
+   "frames": 27,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 6,
+   "mask": "anim_walk8_n_c6_mask.png",
+   "fps": 24,
+   "seam": 0.4
+  },
+  "guitar": {
+   "file": "anim_guitar.webp",
+   "fw": 193,
+   "fh": 257,
+   "frames": 36,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 0,
+   "mask": "anim_guitar_mask.png",
+   "fps": 12,
+   "seam": 0.22
+  },
+  "pool": {
+   "file": "anim_pool.webp",
+   "fw": 218,
+   "fh": 309,
+   "frames": 36,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 0,
+   "mask": "anim_pool_mask.png",
+   "fps": 12,
+   "seam": 0.26
+  },
+  "guitar_c1": {
+   "file": "anim_guitar_c1.webp",
+   "fw": 175,
+   "fh": 227,
+   "frames": 36,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 1,
+   "mask": "anim_guitar_c1_mask.png",
+   "fps": 12,
+   "seam": 0.29
+  },
+  "pool_c1": {
+   "file": "anim_pool_c1.webp",
+   "fw": 176,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 1,
+   "mask": "anim_pool_c1_mask.png",
+   "fps": 12,
+   "seam": 1.35
+  },
+  "guitar_c2": {
+   "file": "anim_guitar_c2.webp",
+   "fw": 184,
+   "fh": 229,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 2,
+   "mask": "anim_guitar_c2_mask.png",
+   "fps": 12,
+   "seam": 0.27
+  },
+  "pool_c2": {
+   "file": "anim_pool_c2.webp",
+   "fw": 210,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 2,
+   "mask": "anim_pool_c2_mask.png",
+   "fps": 12,
+   "seam": 1.5
+  },
+  "guitar_c3": {
+   "file": "anim_guitar_c3.webp",
+   "fw": 185,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 3,
+   "mask": "anim_guitar_c3_mask.png",
+   "fps": 12,
+   "seam": 0.3
+  },
+  "pool_c3": {
+   "file": "anim_pool_c3.webp",
+   "fw": 210,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 3,
+   "mask": "anim_pool_c3_mask.png",
+   "fps": 12,
+   "seam": 0.77
+  },
+  "guitar_c4": {
+   "file": "anim_guitar_c4.webp",
+   "fw": 189,
+   "fh": 234,
+   "frames": 35,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 4,
+   "mask": "anim_guitar_c4_mask.png",
+   "fps": 12,
+   "seam": 0.26
+  },
+  "pool_c4": {
+   "file": "anim_pool_c4.webp",
+   "fw": 252,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 4,
+   "mask": "anim_pool_c4_mask.png",
+   "fps": 12,
+   "seam": 0.77
+  },
+  "guitar_c5": {
+   "file": "anim_guitar_c5.webp",
+   "fw": 179,
+   "fh": 227,
+   "frames": 36,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 5,
+   "mask": "anim_guitar_c5_mask.png",
+   "fps": 12,
+   "seam": 0.39
+  },
+  "pool_c5": {
+   "file": "anim_pool_c5.webp",
+   "fw": 201,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 5,
+   "mask": "anim_pool_c5_mask.png",
+   "fps": 12,
+   "seam": 1.52
+  },
+  "guitar_c6": {
+   "file": "anim_guitar_c6.webp",
+   "fw": 188,
+   "fh": 229,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 6,
+   "mask": "anim_guitar_c6_mask.png",
+   "fps": 12,
+   "seam": 0.32
+  },
+  "pool_c6": {
+   "file": "anim_pool_c6.webp",
+   "fw": 193,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 6,
+   "mask": "anim_pool_c6_mask.png",
+   "fps": 12,
+   "seam": 1.67
+  },
+  "typing": {
+   "file": "anim_typing.webp",
+   "fw": 250,
+   "fh": 345,
+   "frames": 36,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 0,
+   "mask": "anim_typing_mask.png",
+   "fps": 12,
+   "seam": 0.6,
+   "fit": 0.658
+  },
+  "reading": {
+   "file": "anim_reading.webp",
+   "fw": 250,
+   "fh": 345,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 0,
+   "mask": "anim_reading_mask.png",
+   "fps": 12,
+   "seam": 1.09,
+   "fit": 0.658
+  },
+  "sipping": {
+   "file": "anim_sipping.webp",
+   "fw": 139,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 0,
+   "mask": "anim_sipping_mask.png",
+   "fps": 12,
+   "seam": 0.31
+  },
+  "swing_front": {
+   "file": "anim_swing_front.webp",
+   "fw": 236,
+   "fh": 227,
+   "frames": 21,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 0,
+   "mask": "anim_swing_front_mask.png",
+   "fps": 24,
+   "seam": 0.14,
+   "paddle": [
+    53.8,
+    86.4
+   ]
+  },
+  "swing_back": {
+   "file": "anim_swing_back.webp",
+   "fw": 209,
+   "fh": 227,
+   "frames": 22,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 0,
+   "mask": "anim_swing_back_mask.png",
+   "fps": 24,
+   "seam": 0.11,
+   "paddle": [
+    76.8,
+    95.5
+   ]
+  },
+  "play_se": {
+   "file": "anim_play_se.webp",
+   "fw": 187,
+   "fh": 227,
+   "frames": 36,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 0,
+   "mask": "anim_play_se_mask.png",
+   "fps": 12,
+   "seam": 0.08
+  },
+  "play_ne": {
+   "file": "anim_play_ne.webp",
+   "fw": 130,
+   "fh": 227,
+   "frames": 35,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 0,
+   "mask": "anim_play_ne_mask.png",
+   "fps": 12,
+   "seam": 0.09
+  },
+  "typing_c1": {
+   "file": "anim_typing_c1.webp",
+   "fw": 250,
+   "fh": 345,
+   "frames": 35,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 1,
+   "mask": "anim_typing_c1_mask.png",
+   "fps": 12,
+   "seam": 0.67,
+   "fit": 0.638
+  },
+  "reading_c1": {
+   "file": "anim_reading_c1.webp",
+   "fw": 250,
+   "fh": 345,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 1,
+   "mask": "anim_reading_c1_mask.png",
+   "fps": 12,
+   "seam": 1.11,
+   "fit": 0.637
+  },
+  "sipping_c1": {
+   "file": "anim_sipping_c1.webp",
+   "fw": 146,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 1,
+   "mask": "anim_sipping_c1_mask.png",
+   "fps": 12,
+   "seam": 0.22
+  },
+  "swing_front_c1": {
+   "file": "anim_swing_front_c1.webp",
+   "fw": 172,
+   "fh": 227,
+   "frames": 22,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 1,
+   "mask": "anim_swing_front_c1_mask.png",
+   "fps": 24,
+   "seam": 0.11,
+   "paddle": [
+    -0.8,
+    88.2
+   ]
+  },
+  "swing_back_c1": {
+   "file": "anim_swing_back_c1.webp",
+   "fw": 209,
+   "fh": 227,
+   "frames": 18,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 1,
+   "mask": "anim_swing_back_c1_mask.png",
+   "fps": 24,
+   "seam": 0.15,
+   "paddle": [
+    63.5,
+    112.7
+   ]
+  },
+  "play_se_c1": {
+   "file": "anim_play_se_c1.webp",
+   "fw": 156,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 1,
+   "mask": "anim_play_se_c1_mask.png",
+   "fps": 12,
+   "seam": 0.08
+  },
+  "play_ne_c1": {
+   "file": "anim_play_ne_c1.webp",
+   "fw": 124,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 1,
+   "mask": "anim_play_ne_c1_mask.png",
+   "fps": 12,
+   "seam": 0.1
+  },
+  "typing_c2": {
+   "file": "anim_typing_c2.webp",
+   "fw": 250,
+   "fh": 345,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 2,
+   "mask": "anim_typing_c2_mask.png",
+   "fps": 12,
+   "seam": 0.57,
+   "fit": 0.68
+  },
+  "reading_c2": {
+   "file": "anim_reading_c2.webp",
+   "fw": 250,
+   "fh": 345,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 2,
+   "mask": "anim_reading_c2_mask.png",
+   "fps": 12,
+   "seam": 1.11,
+   "fit": 0.681
+  },
+  "sipping_c2": {
+   "file": "anim_sipping_c2.webp",
+   "fw": 124,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 2,
+   "mask": "anim_sipping_c2_mask.png",
+   "fps": 12,
+   "seam": 0.29
+  },
+  "swing_front_c2": {
+   "file": "anim_swing_front_c2.webp",
+   "fw": 210,
+   "fh": 227,
+   "frames": 28,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 2,
+   "mask": "anim_swing_front_c2_mask.png",
+   "fps": 24,
+   "seam": 0.72,
+   "paddle": [
+    79.7,
+    90.9
+   ]
+  },
+  "swing_back_c2": {
+   "file": "anim_swing_back_c2.webp",
+   "fw": 181,
+   "fh": 227,
+   "frames": 21,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 2,
+   "mask": "anim_swing_back_c2_mask.png",
+   "fps": 24,
+   "seam": 0.1,
+   "paddle": [
+    70.3,
+    115.0
+   ]
+  },
+  "play_se_c2": {
+   "file": "anim_play_se_c2.webp",
+   "fw": 175,
+   "fh": 227,
+   "frames": 36,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 2,
+   "mask": "anim_play_se_c2_mask.png",
+   "fps": 12,
+   "seam": 0.09
+  },
+  "play_ne_c2": {
+   "file": "anim_play_ne_c2.webp",
+   "fw": 140,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 2,
+   "mask": "anim_play_ne_c2_mask.png",
+   "fps": 12,
+   "seam": 0.13
+  },
+  "typing_c3": {
+   "file": "anim_typing_c3.webp",
+   "fw": 250,
+   "fh": 345,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 3,
+   "mask": "anim_typing_c3_mask.png",
+   "fps": 12,
+   "seam": 0.64,
+   "fit": 0.686
+  },
+  "reading_c3": {
+   "file": "anim_reading_c3.webp",
+   "fw": 250,
+   "fh": 345,
+   "frames": 36,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 3,
+   "mask": "anim_reading_c3_mask.png",
+   "fps": 12,
+   "seam": 1.02,
+   "fit": 0.686
+  },
+  "sipping_c3": {
+   "file": "anim_sipping_c3.webp",
+   "fw": 127,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 3,
+   "mask": "anim_sipping_c3_mask.png",
+   "fps": 12,
+   "seam": 0.2
+  },
+  "swing_front_c3": {
+   "file": "anim_swing_front_c3.webp",
+   "fw": 302,
+   "fh": 227,
+   "frames": 28,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 3,
+   "mask": "anim_swing_front_c3_mask.png",
+   "fps": 24,
+   "seam": 0.66,
+   "paddle": [
+    32.2,
+    82.8
+   ]
+  },
+  "swing_back_c3": {
+   "file": "anim_swing_back_c3.webp",
+   "fw": 180,
+   "fh": 227,
+   "frames": 21,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 3,
+   "mask": "anim_swing_back_c3_mask.png",
+   "fps": 24,
+   "seam": 0.1,
+   "paddle": [
+    -36.5,
+    145.3
+   ]
+  },
+  "play_se_c3": {
+   "file": "anim_play_se_c3.webp",
+   "fw": 187,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 3,
+   "mask": "anim_play_se_c3_mask.png",
+   "fps": 12,
+   "seam": 0.05
+  },
+  "play_ne_c3": {
+   "file": "anim_play_ne_c3.webp",
+   "fw": 124,
+   "fh": 227,
+   "frames": 36,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 3,
+   "mask": "anim_play_ne_c3_mask.png",
+   "fps": 12,
+   "seam": 0.12
+  },
+  "typing_c4": {
+   "file": "anim_typing_c4.webp",
+   "fw": 250,
+   "fh": 345,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 4,
+   "mask": "anim_typing_c4_mask.png",
+   "fps": 12,
+   "seam": 0.42,
+   "fit": 0.661
+  },
+  "reading_c4": {
+   "file": "anim_reading_c4.webp",
+   "fw": 250,
+   "fh": 345,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 4,
+   "mask": "anim_reading_c4_mask.png",
+   "fps": 12,
+   "seam": 0.85,
+   "fit": 0.661
+  },
+  "sipping_c4": {
+   "file": "anim_sipping_c4.webp",
+   "fw": 126,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 4,
+   "mask": "anim_sipping_c4_mask.png",
+   "fps": 12,
+   "seam": 0.24
+  },
+  "swing_front_c4": {
+   "file": "anim_swing_front_c4.webp",
+   "fw": 183,
+   "fh": 227,
+   "frames": 22,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 4,
+   "mask": "anim_swing_front_c4_mask.png",
+   "fps": 24,
+   "seam": 0.17,
+   "paddle": [
+    61.9,
+    102.4
+   ]
+  },
+  "swing_back_c4": {
+   "file": "anim_swing_back_c4.webp",
+   "fw": 178,
+   "fh": 227,
+   "frames": 21,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 4,
+   "mask": "anim_swing_back_c4_mask.png",
+   "fps": 24,
+   "seam": 0.15,
+   "paddle": [
+    70.9,
+    116.9
+   ]
+  },
+  "play_se_c4": {
+   "file": "anim_play_se_c4.webp",
+   "fw": 150,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 4,
+   "mask": "anim_play_se_c4_mask.png",
+   "fps": 12,
+   "seam": 0.06
+  },
+  "play_ne_c4": {
+   "file": "anim_play_ne_c4.webp",
+   "fw": 168,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 4,
+   "mask": "anim_play_ne_c4_mask.png",
+   "fps": 12,
+   "seam": 0.08
+  },
+  "typing_c5": {
+   "file": "anim_typing_c5.webp",
+   "fw": 250,
+   "fh": 345,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 5,
+   "mask": "anim_typing_c5_mask.png",
+   "fps": 12,
+   "seam": 0.7,
+   "fit": 0.576
+  },
+  "reading_c5": {
+   "file": "anim_reading_c5.webp",
+   "fw": 250,
+   "fh": 345,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 5,
+   "mask": "anim_reading_c5_mask.png",
+   "fps": 12,
+   "seam": 1.59,
+   "fit": 0.576
+  },
+  "sipping_c5": {
+   "file": "anim_sipping_c5.webp",
+   "fw": 130,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 5,
+   "mask": "anim_sipping_c5_mask.png",
+   "fps": 12,
+   "seam": 0.36
+  },
+  "swing_front_c5": {
+   "file": "anim_swing_front_c5.webp",
+   "fw": 232,
+   "fh": 227,
+   "frames": 21,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 5,
+   "mask": "anim_swing_front_c5_mask.png",
+   "fps": 24,
+   "seam": 0.18,
+   "paddle": [
+    84.4,
+    115.8
+   ]
+  },
+  "swing_back_c5": {
+   "file": "anim_swing_back_c5.webp",
+   "fw": 170,
+   "fh": 227,
+   "frames": 20,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 5,
+   "mask": "anim_swing_back_c5_mask.png",
+   "fps": 24,
+   "seam": 0.1,
+   "paddle": [
+    64.4,
+    93.7
+   ]
+  },
+  "play_se_c5": {
+   "file": "anim_play_se_c5.webp",
+   "fw": 163,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 5,
+   "mask": "anim_play_se_c5_mask.png",
+   "fps": 12,
+   "seam": 0.06
+  },
+  "play_ne_c5": {
+   "file": "anim_play_ne_c5.webp",
+   "fw": 130,
+   "fh": 227,
+   "frames": 35,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 5,
+   "mask": "anim_play_ne_c5_mask.png",
+   "fps": 12,
+   "seam": 0.13
+  },
+  "typing_c6": {
+   "file": "anim_typing_c6.webp",
+   "fw": 250,
+   "fh": 345,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 6,
+   "mask": "anim_typing_c6_mask.png",
+   "fps": 12,
+   "seam": 0.58,
+   "fit": 0.578
+  },
+  "reading_c6": {
+   "file": "anim_reading_c6.webp",
+   "fw": 250,
+   "fh": 345,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 6,
+   "mask": "anim_reading_c6_mask.png",
+   "fps": 12,
+   "seam": 1.18,
+   "fit": 0.578
+  },
+  "sipping_c6": {
+   "file": "anim_sipping_c6.webp",
+   "fw": 118,
+   "fh": 227,
+   "frames": 34,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 6,
+   "mask": "anim_sipping_c6_mask.png",
+   "fps": 12,
+   "seam": 0.37
+  },
+  "swing_front_c6": {
+   "file": "anim_swing_front_c6.webp",
+   "fw": 222,
+   "fh": 227,
+   "frames": 21,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 6,
+   "mask": "anim_swing_front_c6_mask.png",
+   "fps": 24,
+   "seam": 0.16,
+   "paddle": [
+    56.4,
+    107.2
+   ]
+  },
+  "swing_back_c6": {
+   "file": "anim_swing_back_c6.webp",
+   "fw": 175,
+   "fh": 227,
+   "frames": 22,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 6,
+   "mask": "anim_swing_back_c6_mask.png",
+   "fps": 24,
+   "seam": 0.16,
+   "paddle": [
+    66.5,
+    116.1
+   ]
+  },
+  "play_se_c6": {
+   "file": "anim_play_se_c6.webp",
+   "fw": 170,
+   "fh": 227,
+   "frames": 35,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 6,
+   "mask": "anim_play_se_c6_mask.png",
+   "fps": 12,
+   "seam": 0.07
+  },
+  "play_ne_c6": {
+   "file": "anim_play_ne_c6.webp",
+   "fw": 122,
+   "fh": 227,
+   "frames": 36,
+   "cols": 8,
+   "anchor": [
+    0.5,
+    0.97
+   ],
+   "body": 214,
+   "char": 6,
+   "mask": "anim_play_ne_c6_mask.png",
+   "fps": 12,
+   "seam": 0.14
   }
  },
  "deskEmpty": {
@@ -1365,5 +3150,98 @@
     126
    ]
   }
+ },
+ "games": {
+  "file": "games.webp",
+  "w": 2048,
+  "h": 562,
+  "items": {
+   "foosball": [
+    0,
+    0,
+    280,
+    277
+   ],
+   "pinball": [
+    282,
+    0,
+    169,
+    280
+   ],
+   "airhockey": [
+    453,
+    0,
+    280,
+    253
+   ],
+   "claw": [
+    735,
+    0,
+    150,
+    280
+   ],
+   "pool": [
+    887,
+    0,
+    280,
+    225
+   ],
+   "hoops": [
+    1169,
+    0,
+    205,
+    280
+   ],
+   "chess": [
+    1376,
+    0,
+    280,
+    274
+   ],
+   "boardgame": [
+    1658,
+    0,
+    280,
+    268
+   ],
+   "tv": [
+    0,
+    282,
+    259,
+    280
+   ],
+   "vr": [
+    261,
+    282,
+    280,
+    198
+   ],
+   "amp": [
+    543,
+    282,
+    180,
+    280
+   ],
+   "scoreboard": [
+    725,
+    282,
+    280,
+    279
+   ]
+  },
+  "panels": [
+   [
+    44,
+    32,
+    82,
+    136
+   ],
+   [
+    125,
+    82,
+    82,
+    134
+   ]
+  ]
  }
 }
