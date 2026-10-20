@@ -41,29 +41,17 @@ pub struct Bubble {
     pub dur: f32,
 }
 
-/// Outfit colours. Index 1 top, 2 hair, 3 pants, 4 skin (never recoloured), 5 accent.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Palette {
-    pub id: u32,
-    pub cols: [Option<[u8; 3]>; 6],
-}
+/// The colours that mark agents in the HUD and on the floor.
+const COLOURS: [[u8; 3]; 12] = [[214, 104, 56], [58, 148, 138], [214, 164, 52], [72, 128, 82], [132, 82, 142], [62, 84, 146], [188, 62, 64], [112, 122, 138], [222, 132, 164], [226, 210, 178], [52, 54, 64], [96, 170, 206]];
 
-const TOPS: [[u8; 3]; 12] = [[214, 104, 56], [58, 148, 138], [214, 164, 52], [72, 128, 82], [132, 82, 142], [62, 84, 146], [188, 62, 64], [112, 122, 138], [222, 132, 164], [226, 210, 178], [52, 54, 64], [96, 170, 206]];
-const HAIR: [[u8; 3]; 8] = [[42, 40, 48], [96, 62, 40], [152, 72, 42], [218, 182, 108], [172, 172, 178], [72, 112, 192], [212, 112, 162], [60, 42, 36]];
-const PANTS: [[u8; 3]; 6] = [[60, 62, 72], [62, 86, 132], [172, 150, 112], [92, 102, 72], [36, 36, 42], [120, 72, 60]];
-const ACCENTS: [[u8; 3]; 8] = [[236, 232, 222], [200, 214, 232], [226, 196, 92], [184, 72, 68], [64, 96, 150], [88, 140, 104], [232, 170, 150], [66, 64, 74]];
-
-/// A palette from a seed. Within one office nobody shares a shirt colour, and hair repeats only when it has to.
-pub fn palette_for(seed: u32, avoid: &[&Palette]) -> Palette {
+/// An agent's colour from a seed: within one office nobody shares one until all are taken.
+pub fn colour_for(seed: u32, avoid: &[[u8; 3]]) -> [u8; 3] {
     let mut r = Rng::new(seed);
     for _ in 0..4 {
         r.next(); // similar seeds start out correlated
     }
-    let tops: Vec<_> = TOPS.iter().filter(|t| !avoid.iter().any(|p| p.cols[1] == Some(**t))).copied().collect();
-    let hair: Vec<_> = HAIR.iter().filter(|h| !avoid.iter().any(|p| p.cols[2] == Some(**h))).copied().collect();
-    let top = *r.pick(if tops.is_empty() { &TOPS[..] } else { &tops });
-    let hr = *r.pick(if hair.is_empty() { &HAIR[..] } else { &hair });
-    Palette { id: seed, cols: [None, Some(top), Some(hr), Some(*r.pick(&PANTS)), None, Some(*r.pick(&ACCENTS))] }
+    let free: Vec<_> = COLOURS.iter().filter(|c| !avoid.contains(c)).copied().collect();
+    *r.pick(if free.is_empty() { &COLOURS[..] } else { &free })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,7 +144,7 @@ pub struct Avatar {
     pub role: Option<String>,
     pub lead: bool,
     pub char_id: u8,
-    pub palette: Palette,
+    pub colour: [u8; 3],
     pub x: f32,
     pub y: f32,
     pub face: Face,
@@ -187,6 +175,23 @@ pub struct Avatar {
     reported: bool,
     /// seconds before this avatar walks in; arrivals come through the door one by one
     arrive_in: f32,
+    /// what the agent is asking you, while it waits on you: it raises its hand
+    pub needs: Option<String>,
+    /// it should be working but has done nothing for a while: it slumps and dozes
+    pub stuck: bool,
+    /// when (in office time) a tool call last failed, and when the context was last compacted
+    pub failed_at: f32,
+    pub tidied_at: f32,
+    /// how full its context is (0..1), and whether that is near the point it compacts at
+    pub gauge: f32,
+    pub gauge_near: bool,
+    /// a custom character's own animation and how much longer it plays
+    pub extra: Option<(&'static str, f32)>,
+    /// tool calls of its that failed
+    pub errors: u32,
+    pub team: Option<String>,
+    /// the session's error and compaction counts this avatar last saw
+    seen: Option<(u32, u32)>,
 }
 
 /// Everything the renderer needs to draw one avatar.
@@ -201,6 +206,10 @@ pub struct Pose {
     pub x: f32,
     pub y: f32,
     pub seated: Option<SeatRef>,
+    /// slumped over, dozing
+    pub slump: bool,
+    /// one of a custom character's own animations, played while it stands
+    pub extra: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -239,7 +248,7 @@ fn wrap(a: f32) -> f32 {
 
 impl Avatar {
     pub fn pose(&self) -> Pose {
-        Pose { anim: self.anim, phase: self.phase, face: self.face, heading: self.heading, stride: self.stride, t: self.t, x: self.x, y: self.y, seated: self.seated }
+        Pose { anim: self.anim, phase: self.phase, face: self.face, heading: self.heading, stride: self.stride, t: self.t, x: self.x, y: self.y, seated: self.seated, slump: self.stuck, extra: self.extra.map(|e| e.0).filter(|_| self.anim == Anim::Stand && self.seated.is_none()) }
     }
     pub fn say(&mut self, kind: BubbleKind, text: impl Into<String>, dur: f32) {
         let text = text.into();
@@ -369,6 +378,8 @@ pub struct Shared {
     play_since: Vec<f32>,
     /// avatars playing a lounge game right now
     playing: Vec<u32>,
+    /// each avatar's team, so a team sits together
+    teams: HashMap<u32, String>,
 }
 
 impl Shared {
@@ -381,9 +392,9 @@ impl Shared {
 }
 
 impl Avatar {
-    /// The colour that marks this agent in the HUD: their shirt.
+    /// The colour that marks this agent in the HUD and on the floor.
     pub fn color(&self) -> [u8; 3] {
-        self.palette.cols[1].unwrap_or([200, 200, 200])
+        self.colour
     }
 }
 
@@ -397,6 +408,8 @@ pub struct World {
     built_for: usize,
     /// counts up each time the room is rebuilt bigger, so its painted floor and walls are redone
     pub generation: u32,
+    /// how long an agent that should be working may do nothing before it counts as stuck
+    pub stuck_after: Duration,
 }
 
 /// Who has claimed which floor tile; a tile claimed by two is nobody's to take.
@@ -412,6 +425,9 @@ impl Claims {
         self.0.get(&t).is_some_and(|&(who, shared)| shared || who != id)
     }
 }
+
+/// Minutes of nothing before an agent that should be working counts as stuck, by default.
+pub const STUCK_SECS: u64 = 8 * 60;
 
 /// How many more people than desks a room takes in before it grows; they wait at the whiteboard.
 const SPARE: usize = 2;
@@ -446,7 +462,15 @@ impl World {
         let base = generate(seed);
         let built_for = if base.desks.len() + SPARE >= crew { 0 } else { crew_step(crew) };
         let layout = if built_for == 0 { base } else { generate_for(seed, built_for) };
-        Self { avatars: Vec::new(), s: Shared::new(layout, seed), project: project.to_owned(), next_id: 1, seed, built_for, generation: 0 }
+        Self { avatars: Vec::new(), s: Shared::new(layout, seed), project: project.to_owned(), next_id: 1, seed, built_for, generation: 0, stuck_after: Duration::from_secs(STUCK_SECS) }
+    }
+
+    /// An empty office in this one's room, which never grows: a replay plays out in it, so the
+    /// floor and walls already painted for this one serve it too.
+    pub fn same_room(&self) -> Self {
+        let mut s = Shared::new(self.s.layout.clone(), self.seed);
+        s.rng = Rng::new(self.seed ^ 0x51ed_270b);
+        Self { avatars: Vec::new(), s, project: self.project.clone(), next_id: 1, seed: self.seed, built_for: MAX_CREW, generation: self.generation, stuck_after: self.stuck_after }
     }
 
     /// Rebuilds the room bigger for `crew` people, keeping its look and everyone in it: they stand
@@ -511,6 +535,7 @@ impl Shared {
             play: vec![[None, None]; layout_games],
             play_since: vec![0.0; layout_games],
             playing: Vec::new(),
+            teams: HashMap::new(),
         }
     }
 }
@@ -533,12 +558,17 @@ impl World {
             AgentRef::Sub(id) => id.clone(),
         };
         let h = hash(&format!("{}:{}", self.project, key));
-        // a character nobody else here has yet; characters repeat (in new outfits) once all are taken
-        let used: Vec<u8> = self.avatars.iter().filter(|a| !a.gone).map(|a| a.char_id).collect();
-        let free: Vec<u8> = (0..7u8).filter(|c| !used.contains(c)).collect();
-        let char_id = if free.is_empty() { (h % 7) as u8 } else { free[(h as usize) % free.len()] };
-        let avoid: Vec<&Palette> = self.avatars.iter().map(|a| &a.palette).collect();
-        let palette = palette_for(h, &avoid);
+        // one of the characters fewest people here are already: a crowd repeats them evenly
+        let pool = crate::custom::pool();
+        let used = |c: u8| self.avatars.iter().filter(|a| !a.gone && a.char_id == c).count();
+        let least = pool.ids.iter().map(|&c| used(c)).min().unwrap_or(0);
+        let free: Vec<u8> = pool.ids.iter().copied().filter(|&c| used(c) == least).collect();
+        let char_id = match pool.lead.filter(|_| lead) {
+            Some(c) => c,
+            None => free.get((h as usize) % free.len().max(1)).copied().unwrap_or(0),
+        };
+        let avoid: Vec<[u8; 3]> = self.avatars.iter().filter(|a| !a.gone).map(|a| a.colour).collect();
+        let colour = colour_for(h, &avoid);
         let door = self.s.layout.door;
         let mut av = Avatar {
             id: self.next_id,
@@ -547,7 +577,7 @@ impl World {
             role,
             lead,
             char_id,
-            palette,
+            colour,
             x: door.x as f32,
             y: door.y as f32,
             face: Face::DR,
@@ -572,6 +602,16 @@ impl World {
             idle_since: Some(0.0),
             reported: false,
             arrive_in: 0.0,
+            needs: None,
+            stuck: false,
+            failed_at: -100.0,
+            tidied_at: -100.0,
+            gauge: 0.0,
+            gauge_near: false,
+            extra: None,
+            errors: 0,
+            team: None,
+            seen: None,
         };
         self.next_id += 1;
         if lead && !self.s.layout.desks.is_empty() {
@@ -586,9 +626,10 @@ impl World {
         self.avatars.len() - 1
     }
 
-    /// Reacts to one live event with a bubble over the right person.
-    pub fn cue(&mut self, e: &Event) {
-        if SystemTime::now().duration_since(e.at).unwrap_or_default() > Duration::from_secs(20) {
+    /// Reacts to one live event with a bubble over the right person. `now` is the session's clock
+    /// (a replay's runs behind the wall's).
+    pub fn cue(&mut self, e: &Event, now: SystemTime) {
+        if now.duration_since(e.at).unwrap_or_default() > Duration::from_secs(20) {
             return; // backlog from before the app started: no bubbles for old news
         }
         let Some(a) = self.avatars.iter_mut().find(|a| a.agent == e.agent && !a.gone) else { return };
@@ -606,7 +647,7 @@ impl World {
 
     /// Brings the avatars in line with the session: hires new agents, sends finished helpers
     /// to report, and replans anyone whose job changed.
-    pub fn sync(&mut self, session: &Session) {
+    pub fn sync(&mut self, session: &Session, now: SystemTime) {
         // a crew that has outgrown the desks gets a bigger room
         let crew = session.live_agents().count();
         if crew > self.s.layout.desks.len() + SPARE && self.built_for < MAX_CREW {
@@ -646,8 +687,38 @@ impl World {
                 continue;
             }
             a.name.clone_from(&st.label);
+            // asked something: it says what, and keeps saying it until you answer
+            if let Some(q) = st.needs.as_ref().filter(|q| a.needs.as_ref() != Some(*q) || a.bubble.is_none()) {
+                a.say(BubbleKind::Say, q.clone(), 30.0);
+            }
+            a.needs.clone_from(&st.needs);
+            a.stuck = session.stuck(st, now, self.stuck_after);
+            if a.team != st.team {
+                a.team.clone_from(&st.team);
+                match &st.team {
+                    Some(t) => self.s.teams.insert(a.id, t.clone()),
+                    None => self.s.teams.remove(&a.id),
+                };
+            }
+            // a failed tool call puffs and a compaction tidies the desk, but only for what happens
+            // while you watch, not for what the log already held
+            let counts = (st.errors, st.compactions);
+            if let Some((errs, comps)) = a.seen {
+                let fresh = |t: Option<SystemTime>| t.is_some_and(|t| now.duration_since(t).unwrap_or_default() < Duration::from_secs(20));
+                if counts.0 > errs && fresh(st.error_at) {
+                    a.failed_at = self.s.elapsed;
+                }
+                if counts.1 > comps && fresh(st.compacted_at) {
+                    a.tidied_at = self.s.elapsed;
+                    a.say(BubbleKind::Think, "Tidying up my notes", 2.5);
+                }
+            }
+            a.seen = Some(counts);
+            a.errors = st.errors;
             let want = if a.lead {
                 match session.status {
+                    // asked something: it stays at its desk with its hand up
+                    _ if st.needs.is_some() => Mode::Work(Activity::Waiting),
                     Status::Working => Mode::Work(st.activity),
                     Status::NeedsYou => Mode::WaitForUser,
                     Status::Idle => Mode::Lounge,
@@ -688,7 +759,17 @@ impl World {
                         a.q.push_back(Step::Call(Call::LeadBreak));
                     }
                 }
-                Mode::Report => plan_report(a, &mut self.s, st.said.clone().unwrap_or_else(|| format!("Done: {}", st.label))),
+                Mode::Report => {
+                    if let Some(k) = crate::custom::extras(a.char_id, crate::custom::Extra::Finish).next() {
+                        a.extra = Some((k, 3.5));
+                    }
+                    // a team that worked together meets at the whiteboard between phases
+                    let mates = st.team.as_ref().map_or(0, |t| session.agents.values().filter(|o| o.team.as_ref() == Some(t)).count());
+                    match st.team.as_ref().filter(|_| mates >= 2) {
+                        Some(team) => plan_huddle(a, &mut self.s, team),
+                        None => plan_report(a, &mut self.s, st.said.clone().unwrap_or_else(|| format!("Done: {}", st.label))),
+                    }
+                }
                 Mode::Lounge => {
                     a.idle_since = Some(self.s.elapsed);
                     release_desk(a, &mut self.s);
@@ -721,6 +802,21 @@ impl World {
         s.bar_busy = self.avatars.iter().flat_map(|a| a.q.iter().map(move |st| (a.id, st.tag()))).filter(|(_, t)| matches!(t, Tag::Bar | Tag::BarQueue)).collect();
         s.playing = self.avatars.iter().filter(|a| a.q.front().is_some_and(|st| matches!(st, Step::Act { tag: Tag::Game(_), started: true, .. }))).map(|a| a.id).collect();
 
+        // a character of your own plays its extras: once its work is done, and now and then
+        // while it stands about
+        for a in &mut self.avatars {
+            if let Some((_, left)) = a.extra.as_mut() {
+                *left -= dt;
+                if *left <= 0.0 {
+                    a.extra = None;
+                }
+            } else if a.anim == Anim::Stand && a.seated.is_none() && a.q.front().is_some_and(|st| matches!(st, Step::Act { .. })) && s.rng.next() < dt / 20.0 {
+                let mut idle = crate::custom::extras(a.char_id, crate::custom::Extra::Idle);
+                if let Some(k) = idle.next() {
+                    a.extra = Some((k, 3.0));
+                }
+            }
+        }
         // two people at the same table chat now and then
         s.chat_t -= dt;
         if s.chat_t <= 0.0 {
@@ -781,6 +877,8 @@ impl World {
             update(a, &mut self.s, dt, idle_count, first_idle, game_waiting);
         }
         self.avatars.retain(|a| !a.gone);
+        let here: HashSet<u32> = self.avatars.iter().map(|a| a.id).collect();
+        self.s.teams.retain(|id, _| here.contains(id));
     }
 }
 
@@ -872,7 +970,24 @@ fn free_desk(a: &mut Avatar, s: &mut Shared) -> Option<usize> {
     if a.desk.is_some() {
         return a.desk;
     }
-    let i = s.desk_owner.iter().position(Option::is_none)?;
+    let free: Vec<usize> = (0..s.desk_owner.len()).filter(|&i| s.desk_owner[i].is_none()).collect();
+    let at = |i: usize| (s.layout.desks[i].x, s.layout.desks[i].y);
+    let gap = |p: (i32, i32), q: (i32, i32)| (p.0 - q.0).abs() + (p.1 - q.1).abs();
+    let team = s.teams.get(&a.id);
+    // the desks of teammates already seated
+    let mates: Vec<(i32, i32)> = match team {
+        Some(t) => (0..s.desk_owner.len()).filter(|&i| s.desk_owner[i].is_some_and(|o| o != a.id && s.teams.get(&o) == Some(t))).map(at).collect(),
+        None => Vec::new(),
+    };
+    let i = if !mates.is_empty() {
+        // next to the team
+        *free.iter().min_by_key(|&&i| (mates.iter().map(|&m| gap(at(i), m)).min().unwrap_or(0), i))?
+    } else if team.is_some() {
+        // the first of a team takes a desk with room around it for the rest
+        *free.iter().max_by_key(|&&i| (free.iter().filter(|&&j| gap(at(i), at(j)) <= 4).count(), std::cmp::Reverse(i)))?
+    } else {
+        *free.first()?
+    };
     s.desk_owner[i] = Some(a.id);
     a.desk = Some(i);
     a.desk
@@ -966,6 +1081,18 @@ fn plan_report(a: &mut Avatar, s: &mut Shared, said: String) {
     s.reporting.push(tile(x, y));
     a.q.push_back(Step::Walk { to: tile(x, y), label: "Reporting to the lead".into(), path: None, tag: Tag::None });
     a.q.push_back(Step::Act { anim: Anim::Stand, sit: None, face: Some(face), left: 3.2, started: false, bubble: Some((BubbleKind::Say, said)), label: "Reporting back".into(), tag: Tag::None, done: Done::Reported });
+}
+
+/// A phase is done: the team stands at the whiteboard a moment, then goes on a break.
+fn plan_huddle(a: &mut Avatar, s: &mut Shared, team: &str) {
+    release_desk(a, s);
+    let board = tile((s.layout.bx0 + s.layout.bx1) / 2, 1);
+    if let Some(t) = free_spot(a, s, board) {
+        a.q.push_back(Step::Walk { to: t, label: "To the whiteboard".into(), path: None, tag: Tag::None });
+    }
+    let phase = team.rsplit(" · ").next().filter(|p| !p.starts_with("batch ")).map_or_else(|| "Done, all of us".to_owned(), |p| format!("{p}: done"));
+    let wait = 5.0 + s.rng.next() * 3.0;
+    a.q.push_back(Step::Act { anim: Anim::Stand, sit: None, face: Some(Face::UR), left: wait, started: false, bubble: Some((BubbleKind::Say, phase)), label: "At the whiteboard with the team".into(), tag: Tag::None, done: Done::Reported });
 }
 
 fn lead_break(a: &mut Avatar, s: &mut Shared) {
@@ -1231,7 +1358,10 @@ fn act(a: &mut Avatar, s: &mut Shared, dt: f32, idle_count: usize, first_idle: O
     if a.alpha < 1.0 && !a.leaving {
         a.alpha = (a.alpha + dt * 3.0).min(1.0);
     }
-    a.t += dt;
+    // a stuck agent at its desk stops moving
+    if !(a.stuck && a.seated.is_some()) {
+        a.t += dt;
+    }
     if let Some(b) = a.bubble.as_mut() {
         b.left -= dt;
         if b.left <= 0.0 {
@@ -1511,7 +1641,7 @@ mod tests {
                 }
                 session.apply(&ev(lead.clone(), EventKind::TurnEnd));
             }
-            w.sync(&session);
+            w.sync(&session, SystemTime::now());
             w.step(1.0 / 60.0);
             let at_bar = w.avatars.iter().filter(|a| a.q.front().is_some_and(|s| matches!(s, Step::Act { tag: Tag::Bar, started: true, .. }))).count();
             if at_bar > 1 {
@@ -1536,6 +1666,52 @@ mod tests {
         assert_eq!(lead_av.mode, Mode::WaitForUser);
     }
 
+    /// A team sits together and meets at the whiteboard when its phase is done; whoever is
+    /// asked something stays put, and a quiet worker slumps.
+    #[test]
+    fn teams_sit_together_and_signals_show() {
+        let key = SessionKey { harness: "t", id: "s".into() };
+        let mut session = Session::new(key, "Test", SystemTime::now());
+        let mut w = World::new("proj", 11);
+        let lead = AgentRef::Lead;
+        session.apply(&ev(lead.clone(), EventKind::UserPrompt { text: "go".into() }));
+        session.apply(&ev(lead.clone(), EventKind::ToolCall { call_id: "1".into(), name: "Read".into(), summary: "a.rs".into() }));
+        for i in 0..4 {
+            session.apply(&ev(lead.clone(), EventKind::SubagentStart { agent_id: format!("a{i}"), description: format!("task {i}"), kind: None }));
+            session.apply(&ev(AgentRef::Sub(format!("a{i}")), EventKind::Team { name: "wf · Build".into() }));
+        }
+        let mut huddled = 0;
+        for frame in 0..(60 * 60) {
+            if frame == 60 * 15 {
+                // the team sits within a few tiles of each other
+                let desks: Vec<(i32, i32)> = w.avatars.iter().filter(|a| a.team.is_some()).filter_map(|a| a.desk).map(|d| (w.s.layout.desks[d].x, w.s.layout.desks[d].y)).collect();
+                assert_eq!(desks.len(), 4, "the whole team got desks");
+                for a in &desks {
+                    assert!(desks.iter().all(|b| (a.0 - b.0).abs() + (a.1 - b.1).abs() <= 6), "team desks are close: {desks:?}");
+                }
+                session.apply(&ev(lead.clone(), EventKind::NeedsInput { text: "Allow?".into() }));
+                for i in 0..4 {
+                    session.apply(&ev(lead.clone(), EventKind::SubagentEnd { agent_id: format!("a{i}") }));
+                }
+            }
+            w.sync(&session, SystemTime::now());
+            w.step(1.0 / 60.0);
+            if frame > 60 * 15 {
+                huddled = huddled.max(w.avatars.iter().filter(|a| a.team.is_some() && a.q.iter().any(|s| matches!(s, Step::Act { label, .. } if label.contains("whiteboard")))).count());
+                if frame > 60 * 18 {
+                    let l = w.avatars.iter().find(|a| a.lead).unwrap();
+                    assert!(l.needs.is_some() && l.is_seated_at_desk(), "the lead waits at its desk with its hand up");
+                }
+            }
+        }
+        assert!(huddled >= 2, "the finished team met at the whiteboard ({huddled})");
+        // nothing for longer than the limit: the lead is stuck
+        session.apply(&ev(lead.clone(), EventKind::ToolCall { call_id: "2".into(), name: "Bash".into(), summary: "ls".into() }));
+        w.stuck_after = Duration::from_secs(0);
+        w.sync(&session, SystemTime::now() + Duration::from_secs(5));
+        assert!(w.avatars.iter().find(|a| a.lead).unwrap().stuck);
+    }
+
     /// More helpers than desks: nobody shares a tile or stands inside a workstation.
     #[test]
     fn everyone_gets_their_own_spot() {
@@ -1556,7 +1732,7 @@ mod tests {
                         session.apply(&ev(lead.clone(), EventKind::SubagentEnd { agent_id: format!("s{i}") }));
                     }
                 }
-                w.sync(&session);
+                w.sync(&session, SystemTime::now());
                 w.step(1.0 / 60.0);
                 if frame < 60 * 25 || frame % 30 != 0 {
                     continue;
@@ -1575,9 +1751,8 @@ mod tests {
     }
 
     #[test]
-    fn palettes_differ_inside_an_office() {
-        let a = palette_for(1, &[]);
-        let b = palette_for(1, &[&a]);
-        assert_ne!(a.cols[1], b.cols[1]);
+    fn colours_differ_inside_an_office() {
+        let a = colour_for(1, &[]);
+        assert_ne!(a, colour_for(1, &[a]));
     }
 }

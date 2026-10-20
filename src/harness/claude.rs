@@ -83,6 +83,7 @@ impl Adapter for ClaudeCode {
             sessions_dir: root.map(|r| r.join("sessions")),
             last_status: None,
             status_checked: None,
+            workflow: spec.path.parent().and_then(|d| d.file_name()).and_then(|n| n.to_str()).filter(|n| n.starts_with("wf_")).map(str::to_owned),
         })
     }
 }
@@ -158,6 +159,8 @@ struct Reader {
     sessions_dir: Option<PathBuf>,
     last_status: Option<String>,
     status_checked: Option<Instant>,
+    /// the workflow run this helper belongs to (`wf_<id>`), if any
+    workflow: Option<String>,
 }
 
 impl Reader {
@@ -304,6 +307,11 @@ impl SourceReader for Reader {
                 // the start is when the helper's first line was written, not when we found it
                 let at = lines[0].get("timestamp").map_or_else(SystemTime::now, ts);
                 out.push(self.ev(at, EventKind::SubagentStart { agent_id: id.clone(), description, kind }));
+                // a workflow's helpers sit in `workflows/wf_<id>/`, each with its phase
+                let phase = m.and_then(|m| m.get("workflowPhase").and_then(Value::as_str));
+                if let (Some(phase), Some(wf)) = (phase, self.workflow.as_deref()) {
+                    out.push(self.ev(at, EventKind::Team { name: format!("{wf} · {phase}") }));
+                }
             }
         }
         let first_read = !self.started;

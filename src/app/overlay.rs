@@ -1,6 +1,6 @@
 //! The layer over the office: speech bubbles, name tags and the ping pong score, plus the
-//! pointer (hover, click, drag to pan, wheel to zoom). Text stays a readable size: it grows a
-//! little with zoom, never with the room.
+//! pointer (hover, click, drag to pan, wheel to zoom). Text stays a readable size whatever the
+//! room's size: it grows a little as you zoom in.
 
 use super::style::{self, p, MONO, UI, UI_BOLD};
 use super::Message;
@@ -143,7 +143,7 @@ impl canvas::Program<Message> for Overlay<'_> {
     fn draw(&self, _st: &State, renderer: &Renderer, _theme: &Theme, bounds: Rectangle, _cursor: Cursor) -> Vec<Geometry> {
         let mut f = Frame::new(renderer, bounds.size());
         let Some(world) = self.world else { return vec![f.into_geometry()] };
-        let ub = self.cam.fit * self.cam.z.min(1.25);
+        let ub = text_scale(self.cam.z);
         let tag = match self.hover {
             Some(Hit::Agent(id)) => Some(id),
             _ => None,
@@ -152,39 +152,57 @@ impl canvas::Program<Message> for Overlay<'_> {
         let mut items: Vec<(f32, f32, &crate::office::world::Avatar, &crate::office::world::Bubble)> = Vec::new();
         let by_id: std::collections::HashMap<u32, &crate::office::world::Avatar> = world.avatars.iter().map(|a| (a.id, a)).collect();
         let on_screen = |sx: f32, sy: f32| sx > -200.0 && sx < bounds.width + 200.0 && sy > -40.0 && sy < bounds.height + 400.0;
+        // a big crew only speaks up when it matters: whoever waits on you, just failed, leads,
+        // or is picked or pointed at
+        let crowd = world.avatars.len() > CROWD;
+        let matters = |a: &crate::office::world::Avatar| a.lead || a.needs.is_some() || world.s.elapsed - a.failed_at < 4.0 || Some(a.id) == tag || Some(a.id) == self.selected;
         for h in &self.scene.heads {
             let Some(a) = by_id.get(&h.id).copied().filter(|a| a.alpha > 0.3) else { continue };
             let (sx, sy) = self.cam.to_screen(h.x, h.y);
             if !on_screen(sx, sy) {
                 continue;
             }
-            match a.bubble.as_ref().filter(|_| self.bubbles) {
+            match a.bubble.as_ref().filter(|_| self.bubbles && (!crowd || matters(a))) {
                 Some(b) => items.push((sx, sy, a, b)),
                 None if Some(a.id) == tag || Some(a.id) == self.selected => name_tag(&mut f, &a.name, style::rgb8(a.color()), sx, sy, ub),
                 None => {}
             }
         }
-        // a crowd says more than fits: the newest bubbles (and whoever is picked or pointed at)
-        if items.len() > MAX_BUBBLES {
-            let keep = |a: &crate::office::world::Avatar| Some(a.id) == tag || Some(a.id) == self.selected;
-            items.sort_by(|p, q| keep(q.2).cmp(&keep(p.2)).then((p.3.dur - p.3.left).total_cmp(&(q.3.dur - q.3.left))));
-            items.truncate(MAX_BUBBLES);
-        }
-        items.sort_by(|p, q| q.1.total_cmp(&p.1));
+        // what matters goes first and always shows; then what is said, then tool lines, the
+        // nearest first; one that finds no clear space after a lift or two is left out, so the
+        // bubbles that show can be read
+        let rank = |a: &crate::office::world::Avatar, b: &crate::office::world::Bubble| if matters(a) { 2 } else if b.kind == BubbleKind::Tool { 0 } else { 1 };
+        items.sort_by(|p, q| rank(q.2, q.3).cmp(&rank(p.2, p.3)).then(q.1.total_cmp(&p.1)));
         let mut placed: Vec<Rectangle> = Vec::new();
+        let mut shown = Vec::new();
         for (sx, sy, a, b) in items {
+            if placed.len() >= MAX_BUBBLES {
+                break;
+            }
             // bubbles pop in: a quick ease-out-back on their first fifth of a second
             let k = ub * pop(b.dur - b.left);
             let (w, h) = bubble_size(b.kind, &b.text, k);
+            let must = rank(a, b) == 2;
             let mut lift = 0.0;
-            for _ in 0..8 {
+            let mut clear = false;
+            for _ in 0..if must { 8 } else { 2 } {
                 let r = Rectangle::new(Point::new(sx - w / 2.0, sy - h - lift), Size::new(w, h));
                 match placed.iter().find(|q| q.intersects(&r)) {
                     Some(q) => lift = sy - h - q.y + 3.0,
-                    None => break,
+                    None => {
+                        clear = true;
+                        break;
+                    }
                 }
             }
+            if !clear && !must {
+                continue;
+            }
             placed.push(Rectangle::new(Point::new(sx - w / 2.0, sy - h - lift), Size::new(w, h)));
+            shown.push((sx, sy, a, b, lift, k));
+        }
+        // the ones that matter are drawn last, over the rest
+        for (sx, sy, a, b, lift, k) in shown.into_iter().rev() {
             let fade = (b.left / 0.35).min((b.dur - b.left) / 0.2 + 0.2).clamp(0.0, 1.0);
             bubble(&mut f, b.kind, &b.text, style::rgb8(a.color()), sx, sy, lift, k, fade);
         }
@@ -211,6 +229,15 @@ impl canvas::Program<Message> for Overlay<'_> {
 
 /// The most speech bubbles shown at once.
 const MAX_BUBBLES: usize = 18;
+/// More people than this and only the bubbles that matter show.
+const CROWD: usize = 24;
+/// The longest tool line a bubble shows.
+const TOOL_CHARS: usize = 38;
+
+/// How big bubble text is drawn: its own size at fit, growing a little as you zoom in.
+fn text_scale(z: f32) -> f32 {
+    (1.05 + 0.32 * z.max(1.0).log2()).min(1.6)
+}
 
 fn font(bytes: &'static [u8], cell: &'static OnceLock<fontdue::Font>) -> &'static fontdue::Font {
     cell.get_or_init(|| fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).expect("embedded font"))
@@ -325,18 +352,29 @@ fn pop(age: f32) -> f32 {
     0.82 + 0.18 * back
 }
 
+/// A tool line short enough for a bubble, cut between words (or path parts) where it can.
 fn tool_text(text: &str) -> String {
-    if text.chars().count() > 34 {
-        text.chars().take(33).chain(['…']).collect()
-    } else {
-        text.to_owned()
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() <= TOOL_CHARS {
+        return text;
     }
+    let head: String = text.chars().take(TOOL_CHARS - 1).collect();
+    let cut = head.char_indices().filter(|&(i, c)| i > head.len() / 2 && matches!(c, ' ' | '/' | '\\' | ',' | '.' | ':' | '(')).map(|(i, _)| i).last();
+    let mut out = match cut {
+        Some(i) => head[..i].trim_end_matches([' ', '·', ',', ':']).to_owned(),
+        None => head,
+    };
+    out.push('…');
+    out
 }
+
+/// Tool bubble text size at scale 1.
+const TOOL_SIZE: f32 = 10.0;
 
 /// Screen size of a bubble including its tail.
 fn bubble_size(kind: BubbleKind, text: &str, k: f32) -> (f32, f32) {
     if kind == BubbleKind::Tool {
-        return (measure(&tool_text(text), 9.0 * k, MONO) + 12.0 * k, 17.0 * k);
+        return (measure(&tool_text(text), TOOL_SIZE * k, MONO) + 14.0 * k, 20.0 * k);
     }
     let (lines, widest) = &*wrapped(text, k);
     let w = widest + 16.0 * k;
@@ -349,13 +387,15 @@ fn bubble(f: &mut Frame, kind: BubbleKind, text: &str, accent: Color, x: f32, y0
     let a = |c: Color, m: f32| Color { a: c.a * m * fade, ..c };
     let y = y0 - lift;
     if kind == BubbleKind::Tool {
-        let size = 9.0 * k;
+        let size = TOOL_SIZE * k;
         let t = tool_text(text);
-        let w = measure(&t, size, MONO) + 12.0 * k;
+        let w = measure(&t, size, MONO) + 14.0 * k;
         let pal = p();
-        f.fill(&rounded(x - w / 2.0, y - 16.0 * k, w, 15.0 * k, 7.0 * k), a(style::alpha(pal.surface, 0.95), 1.0));
-        f.fill_rectangle(Point::new(x - w / 2.0 + 4.0 * k, y - 11.0 * k), Size::new(3.0 * k, 5.0 * k), a(accent, 1.0));
-        label(f, &t, x - w / 2.0 + 9.0 * k, y - 5.5 * k, size, a(pal.text, 1.0), MONO);
+        let body = rounded(x - w / 2.0, y - 19.0 * k, w, 17.0 * k, 8.0 * k);
+        f.fill(&body, a(pal.surface, 1.0));
+        f.stroke(&body, Stroke::default().with_width(1.0).with_color(a(style::alpha(pal.text, 0.22), 1.0)));
+        f.fill(&rounded(x - w / 2.0 + 5.0 * k, y - 13.5 * k, 3.0 * k, 6.0 * k, 1.5 * k), a(accent, 1.0));
+        label(f, &t, x - w / 2.0 + 11.0 * k, y - 6.6 * k, size, a(pal.text, 1.0), MONO);
         return;
     }
     let size = 10.5 * k;
@@ -456,4 +496,19 @@ fn flip_card(f: &mut Frame, r: Rectangle, value: u32, age: f32) {
 pub fn screen_of(cam: &Camera, wx: f32, wy: f32) -> Vector {
     let (x, y) = cam.to_screen(wx, wy);
     Vector::new(x, y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_lines_are_cut_between_words() {
+        assert_eq!(tool_text("Bash · cargo test"), "Bash · cargo test");
+        let t = tool_text("Bash · Measure render duration and frame pacing across all tabs");
+        assert!(t.ends_with('…') && t.chars().count() <= TOOL_CHARS, "{t}");
+        assert!(t.starts_with("Bash · Measure render duration and") && !t.contains("fra…"), "{t}");
+        let p = tool_text("Read · /home/someone/projects/a/very/long/path/to/some/file.rs");
+        assert!(!p.ends_with("/…"), "{p}");
+    }
 }

@@ -43,6 +43,11 @@ fn tidy(p: &Path) -> String {
 
 /// The user's settings for `harness` running `model`, looking in the project (`cwd`) first.
 /// Empty when they set nothing, or the harness has no such settings.
+/// The harnesses whose compaction and window settings are read.
+pub fn knows(harness: &str) -> bool {
+    matches!(harness, "claude-code" | "codex" | "gemini-cli" | "qwen-code" | "goose")
+}
+
 pub fn read(harness: &str, cwd: Option<&Path>, model: Option<&str>) -> Settings {
     match harness {
         "claude-code" => claude(cwd, model),

@@ -1,6 +1,6 @@
 //! The office's wgpu pass, plugged into iced through the shader widget.
 
-use super::assets::{self, decode, meta, mips, premultiply, split_sheet, MAX_SHADE};
+use super::assets::{decode, meta, mips, premultiply};
 use super::city::Sky;
 use super::{DrawList, Fx, Instance, TexKey};
 use iced::wgpu;
@@ -30,7 +30,6 @@ pub struct Pipeline {
     globals_bind: wgpu::BindGroup,
     tex_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    zero: wgpu::TextureView,
     textures: HashMap<TexKey, Tex>,
     instances: wgpu::Buffer,
     capacity: u64,
@@ -143,7 +142,7 @@ struct Globals {
     scale: [f32; 2],
     offset: [f32; 2],
     srgb_target: f32,
-    max_shade: f32,
+    _pad0: f32,
     _pad: [f32; 2],
 }
 
@@ -173,12 +172,12 @@ impl shader::Pipeline for Pipeline {
         };
         let tex_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("office textures"),
-            entries: &[tex_entry(0), tex_entry(1), wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None }],
+            entries: &[tex_entry(0), wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None }],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("office"), bind_group_layouts: &[&globals_layout, &tex_layout], push_constant_ranges: &[] });
         let attrs = wgpu::vertex_attr_array![
             0 => Float32x4, 1 => Float32x2, 2 => Float32x2, 3 => Float32x4,
-            4 => Unorm8x4, 5 => Unorm8x4, 6 => Unorm8x4, 7 => Unorm8x4, 8 => Unorm8x4
+            4 => Unorm8x4
         ];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("office"),
@@ -212,11 +211,10 @@ impl shader::Pipeline for Pipeline {
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             ..Default::default()
         });
-        let zero = device.create_texture(&tex_desc(1, 1, 1)).create_view(&Default::default());
         let capacity = 1024;
         let instances = device.create_buffer(&wgpu::BufferDescriptor { label: Some("office instances"), size: capacity * std::mem::size_of::<Instance>() as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let city = City::new(device, format);
-        Self { pipeline, globals, globals_bind, tex_layout, sampler, zero, textures: HashMap::new(), instances, capacity, runs: Vec::new(), srgb: format.is_srgb(), frame: 0, city }
+        Self { pipeline, globals, globals_bind, tex_layout, sampler, textures: HashMap::new(), instances, capacity, runs: Vec::new(), srgb: format.is_srgb(), frame: 0, city }
     }
 
     fn trim(&mut self) {
@@ -261,7 +259,8 @@ fn upload(device: &wgpu::Device, queue: &wgpu::Queue, img: &RgbaImage, levels: u
 fn fx_image(fx: Fx) -> RgbaImage {
     let (w, h) = match fx {
         Fx::White => (4, 4),
-        Fx::Shadow | Fx::Ring => (128, 56),
+        Fx::Shadow | Fx::Ring | Fx::Arc(_) => (128, 56),
+        Fx::Paper => (8, 10),
         Fx::Dot => (32, 32),
         Fx::Glass => (16, 64),
         Fx::Ramp => (4, 64),
@@ -278,6 +277,15 @@ fn fx_image(fx: Fx) -> RgbaImage {
                 (1.0 - d / 0.07).clamp(0.0, 1.0)
             }
             Fx::Dot => ((1.0 - r) * 8.0).clamp(0.0, 1.0),
+            // a thicker ring, only as far round (clockwise from the back) as it is full
+            Fx::Arc(n) => {
+                let turn = (v.atan2(u) / std::f32::consts::TAU + 0.75).fract();
+                let d = (r - 0.86).abs();
+                if turn <= n as f32 / super::ARC_STEPS as f32 { (1.0 - d / 0.11).clamp(0.0, 1.0) } else { 0.0 }
+            }
+            Fx::Paper => {
+                if x == 0 || x == w - 1 || y == 0 || y == h - 1 { 0.75 } else { 1.0 }
+            }
             Fx::Ramp => {
                 let t = (y as f32 + 0.5) / h as f32;
                 t * t * (3.0 - 2.0 * t)
@@ -294,6 +302,8 @@ fn fx_image(fx: Fx) -> RgbaImage {
         let (cr, cg, cb) = match fx {
             Fx::Glass if x == 0 || x == w - 1 || y == 0 || y == h - 1 => (220.0, 235.0, 245.0),
             Fx::Glass => (170.0, 205.0, 230.0),
+            Fx::Paper if x == 0 || x == w - 1 || y == 0 || y == h - 1 => (150.0, 150.0, 160.0),
+            Fx::Paper if y % 3 == 2 && x > 1 && x < w - 2 => (190.0, 196.0, 210.0),
             _ => (255.0, 255.0, 255.0),
         };
         image::Rgba([(cr * a) as u8, (cg * a) as u8, (cb * a) as u8, (255.0 * a) as u8])
@@ -301,14 +311,13 @@ fn fx_image(fx: Fx) -> RgbaImage {
 }
 
 impl Pipeline {
-    fn bind(&self, device: &wgpu::Device, color: &wgpu::TextureView, weights: &wgpu::TextureView) -> wgpu::BindGroup {
+    fn bind(&self, device: &wgpu::Device, color: &wgpu::TextureView) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("office texture"),
             layout: &self.tex_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(color) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(weights) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],
         })
     }
@@ -325,36 +334,23 @@ impl Pipeline {
             }
         }
         let made = match key {
-            TexKey::Sheet(name) => meta().anims.get(*name).and_then(|a| {
-                let src = decode(&a.file)?;
-                let mask = a.mask.as_deref().and_then(assets::file).and_then(|b| image::load_from_memory(b).ok()).map(|m| m.to_luma8());
-                Some(match mask {
-                    Some(mask) if mask.dimensions() == src.dimensions() => {
-                        let (fixed, weights) = split_sheet(&src, &mask);
-                        let (c, b1) = upload(device, queue, &fixed, MIP_LEVELS);
-                        let (w, b2) = upload(device, queue, &weights, MIP_LEVELS);
-                        (self.bind(device, &c, &w), 0, b1 + b2)
-                    }
-                    _ => {
-                        let mut src = src;
-                        premultiply(&mut src);
-                        let (c, b) = upload(device, queue, &src, MIP_LEVELS);
-                        (self.bind(device, &c, &self.zero), 0, b)
-                    }
-                })
+            TexKey::Sheet(name) => meta().anims.get(*name).and_then(|a| decode(&a.file)).map(|mut img| {
+                premultiply(&mut img);
+                let (c, b) = upload(device, queue, &img, MIP_LEVELS);
+                (self.bind(device, &c), 0, b)
             }),
             TexKey::Atlas(file) => decode(file).map(|mut img| {
                 premultiply(&mut img);
                 let (c, b) = upload(device, queue, &img, MIP_LEVELS);
-                (self.bind(device, &c, &self.zero), 0, b)
+                (self.bind(device, &c), 0, b)
             }),
             TexKey::Fx(fx) => {
                 let (c, b) = upload(device, queue, &fx_image(*fx), 1);
-                Some((self.bind(device, &c, &self.zero), 0, b))
+                Some((self.bind(device, &c), 0, b))
             }
             TexKey::Layer(_) => layer.map(|l| {
                 let (c, b) = upload(device, queue, &l.image, 3);
-                (self.bind(device, &c, &self.zero), l.version, b)
+                (self.bind(device, &c), l.version, b)
             }),
         };
         if let Some((bind, version, bytes)) = made {
@@ -378,7 +374,7 @@ impl shader::Primitive for Primitive {
             scale: [2.0 * self.scale / w, -2.0 * self.scale / h],
             offset: [2.0 * self.origin.0 / w - 1.0, 1.0 - 2.0 * self.origin.1 / h],
             srgb_target: if p.srgb { 1.0 } else { 0.0 },
-            max_shade: MAX_SHADE,
+            _pad0: 0.0,
             _pad: [0.0; 2],
         };
         queue.write_buffer(&p.globals, 0, bytemuck::bytes_of(&g));

@@ -5,12 +5,17 @@ use super::assets::{meta, sheet_key};
 use super::paint::CUTAWAY;
 use super::city::{self, City, Sky};
 use super::view::{wall_height, View, Wall};
-use super::{DrawList, Fx, Instance, Layer, TexKey};
+use super::{DrawList, Fx, Instance, Layer, TexKey, ARC_STEPS};
 use crate::office::gen::{Atlas, Layout, Play, Prop, SeatKind};
 use crate::office::world::{Anim, Avatar, Ball, GameState, Pose, SeatRef, World, PP_HIT_A, PP_HIT_B, PP_PERIOD};
 use crate::office::{Face, TH, TW};
 
 /// Sprite scale and how far below the tile centre the feet sit, per sheet family.
+const DESK_FRONT: &str = "desk_front.webp";
+
+/// Where a custom character sits at a desk: the chair's seat, from the desk's centre, in world px.
+const DESK_CHAIR: (f32, f32) = (12.0, 3.0);
+
 fn sheet_scale(base: &str) -> (f32, f32) {
     match base {
         "type" | "read" => (0.54, 12.0),
@@ -61,7 +66,7 @@ fn prop_width(name: &str) -> Option<f32> {
 
 /// The sheets made from video: 8 directions of walking and standing, and the games. They are
 /// drawn at HiDPI resolution, so they scale down further than the hand-made sheets.
-const VIDEO_SCALE: f32 = 0.324;
+pub const VIDEO_SCALE: f32 = 0.324;
 /// Tiles walked per walk cycle (two steps), so the feet keep up with the floor.
 const STRIDE: f32 = 1.7;
 /// The five filmed directions, front to back; the other three are these mirrored.
@@ -104,14 +109,19 @@ fn parts(p: &Pose, char_id: u8, w: &World, v: &View, anim_fps: f32) -> Vec<Part>
     let cx = px0 + seat.map_or(0.0, |s| if v.mirrored() { -s.dx } else { s.dx });
     let (toward, right) = v.facing(p.face);
     let mirrored = v.mirrored();
+    // a character of your own sits on the chair of a desk the office draws round it
+    let bare = seat.is_some_and(|st| st.kind == SeatKind::Desk) && crate::custom::character_of(char_id).is_some_and(|c| c.bare_desk);
     let old = |base: &'static str, flip: bool, fixed: Option<u32>| {
         let (key, an) = m.anims.get_key_value(&sheet_key(base, char_id))?;
         let key = key.as_str();
         let (s, lift0) = sheet_scale(base);
+        let s = an.scale.unwrap_or(s);
         let lift = match seat {
             Some(st) if st.kind != SeatKind::Desk => st.lift,
+            _ if bare => DESK_CHAIR.1,
             _ => lift0,
         };
+        let cx = if bare { cx + if mirrored { -DESK_CHAIR.0 } else { DESK_CHAIR.0 } } else { cx };
         let frame = match fixed {
             Some(f) => f,
             None => {
@@ -140,7 +150,7 @@ fn parts(p: &Pose, char_id: u8, w: &World, v: &View, anim_fps: f32) -> Vec<Part>
             let name = if base == "stand8" { sheet_key(base, char_id) } else { sheet_key(&format!("{base}_{}", DIRS[d]), char_id) };
             let (key, an) = m.anims.get_key_value(&name)?;
             let key = key.as_str();
-            out.push(Part { key, frame: frame(an.frames, d) % an.frames, flip, scale: VIDEO_SCALE, cx, by: cy + 6.0, alpha: wgt, stretch });
+            out.push(Part { key, frame: frame(an.frames, d) % an.frames, flip, scale: an.scale.unwrap_or(VIDEO_SCALE), cx, by: cy + 6.0, alpha: wgt, stretch });
         }
         // the stronger direction is drawn whole, the other over it as much as it shows
         out.sort_by(|a, b| b.alpha.total_cmp(&a.alpha));
@@ -156,7 +166,7 @@ fn parts(p: &Pose, char_id: u8, w: &World, v: &View, anim_fps: f32) -> Vec<Part>
         let (key, an) = m.anims.get_key_value(&sheet_key(base, char_id))?;
         let key = key.as_str();
         let frame = ((p.t + p.phase) * an.fps.unwrap_or(24.0)) as u32 % an.frames;
-        Some(vec![Part { key, frame, flip, scale: VIDEO_SCALE, cx, by, alpha: 1.0, stretch: 1.0 }])
+        Some(vec![Part { key, frame, flip, scale: an.scale.unwrap_or(VIDEO_SCALE), cx, by, alpha: 1.0, stretch: 1.0 }])
     };
     // a ping pong stroke starts at the hit, so it lines up with this player's turn in the rally
     // (`hit`, as a fraction of the period); between rallies they wait halfway back to ready
@@ -168,11 +178,16 @@ fn parts(p: &Pose, char_id: u8, w: &World, v: &View, anim_fps: f32) -> Vec<Part>
             Some(g) if g.swinging(w.s.elapsed) => ((w.s.elapsed - g.t0) / PP_PERIOD - hit).rem_euclid(1.0) * n,
             _ => n / 2.0,
         };
-        Some(vec![Part { key, frame: frame as u32 % an.frames, flip: !right, scale: VIDEO_SCALE, cx, by: cy + 6.0, alpha: 1.0, stretch: 1.0 }])
+        Some(vec![Part { key, frame: frame as u32 % an.frames, flip: !right, scale: an.scale.unwrap_or(VIDEO_SCALE), cx, by: cy + 6.0, alpha: 1.0, stretch: 1.0 }])
     };
     // seat lifts are for sitting on a sofa or a stool; at a desk the sheet holds the desk too
     let lift = seat.filter(|st| st.kind != SeatKind::Desk).map(|st| st.lift);
     let one = |x: Option<Part>| x.into_iter().collect::<Vec<_>>();
+    if let Some(k) = p.extra {
+        if let Some(parts) = filmed(k.strip_suffix(&format!("_c{char_id}")).unwrap_or(k), !right, cy + 6.0) {
+            return parts;
+        }
+    }
     let got = match p.anim {
         Anim::Walk => {
             let start = |frames: u32| (p.stride / STRIDE).fract() * frames as f32;
@@ -207,8 +222,8 @@ fn parts(p: &Pose, char_id: u8, w: &World, v: &View, anim_fps: f32) -> Vec<Part>
     })
 }
 
-/// A part as a quad, recoloured with the avatar's outfit.
-fn part_quad(pt: &Part, a: &Avatar, alpha: f32, lift: f32) -> Option<(TexKey, Instance, f32, f32)> {
+/// A part as a quad.
+fn part_quad(pt: &Part, alpha: f32, lift: f32) -> Option<(TexKey, Instance, f32, f32)> {
     let an = meta().anims.get(pt.key)?;
     let i = pt.frame;
     let sheet_w = an.fw * an.cols;
@@ -216,12 +231,7 @@ fn part_quad(pt: &Part, a: &Avatar, alpha: f32, lift: f32) -> Option<(TexKey, In
     let uv = uv_rect((i % an.cols) * an.fw, (i / an.cols) * an.fh, an.fw, an.fh, (sheet_w, an.fh * rows));
     let (dw, dh) = (an.fw as f32 * pt.scale, an.fh as f32 * pt.scale * pt.stretch);
     let by = pt.by - lift;
-    let mut inst = Instance::rect(pt.cx - dw / 2.0, by - dh, dw, dh, uv, pt.flip).alpha(alpha * pt.alpha);
-    for (k, region) in [1usize, 2, 3, 5].into_iter().enumerate() {
-        if let Some(c) = a.palette.cols[region] {
-            inst.cols[k] = [c[0], c[1], c[2], 255];
-        }
-    }
+    let inst = Instance::rect(pt.cx - dw / 2.0, by - dh, dw, dh, uv, pt.flip).alpha(alpha * pt.alpha);
     Some((TexKey::Sheet(pt.key), inst, dw, dh))
 }
 
@@ -298,12 +308,87 @@ fn uv_rect(x: u32, y: u32, w: u32, h: u32, size: (u32, u32)) -> [f32; 4] {
 }
 
 const FULL: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+/// The ring's colour once a context is close to compacting.
+const NEAR: [u8; 3] = [232, 84, 60];
+/// The atlas of signs drawn over heads.
+const SIGNALS: &str = "signals.webp";
+
+/// Over someone's head: a raised hand while they wait on you, z's while they doze off, a red puff
+/// when a tool call fails, and papers flying off the desk when their context is compacted.
+#[allow(clippy::too_many_arguments)]
+fn signals(a: &Avatar, w: &World, now: f32, cx: f32, top: f32, by: f32, d: f32, items: &mut Vec<(f32, TexKey, Instance)>) {
+    let m = meta();
+    let dot = |x: f32, y: f32, r: f32, c: [u8; 4]| Instance::rect(x - r, y - r, 2.0 * r, 2.0 * r, FULL, false).tint(c);
+    // a sign from the atlas, `h` tall with its foot at (x, y)
+    let sign = |name: &str, x: f32, y: f32, h: f32, alpha: f32| -> Option<(TexKey, Instance)> {
+        let &(file, r) = m.items.get(name)?;
+        let wd = h * r[2] as f32 / r[3].max(1) as f32;
+        let uv = uv_rect(r[0], r[1], r[2], r[3], m.atlas_size.get(file).copied().unwrap_or((1, 1)));
+        Some((TexKey::Atlas(file), Instance::rect(x - wd / 2.0, y - h, wd, h, uv, false).alpha(alpha)))
+    };
+    let el = w.s.elapsed;
+    if a.needs.is_some() {
+        // up beside the head and waving a little (clear of the bubble over it), so a crowd
+        // still shows who is waiting
+        let bob = (now * 4.2 + a.phase).sin() * 2.2;
+        let (x, y) = (cx + 17.0, top + 20.0 + bob);
+        match sign("hand", x, y, 22.0, a.alpha) {
+            Some((k, i)) => items.push((d + 0.003, k, i)),
+            None => {
+                items.push((d + 0.003, TexKey::Fx(Fx::Dot), dot(x, y - 9.0, 8.0, [240, 170, 50, (255.0 * a.alpha) as u8])));
+                items.push((d + 0.0031, TexKey::Fx(Fx::Dot), dot(x, y - 9.0, 4.0, [255, 250, 235, (255.0 * a.alpha) as u8])));
+            }
+        }
+    } else if a.stuck {
+        for k in 0..3 {
+            let u = (now * 0.4 + k as f32 / 3.0 + a.phase).fract();
+            let (x, y, h) = (cx + 6.0 + u * 12.0, top + 4.0 - u * 20.0, 6.0 + u * 7.0);
+            let fade = a.alpha * (1.0 - u) * (u * 6.0).min(1.0);
+            match sign("z", x, y, h, fade) {
+                Some((key, i)) => items.push((d + 0.003, key, i)),
+                None => items.push((d + 0.003, TexKey::Fx(Fx::Dot), dot(x, y, h * 0.3, [200, 210, 235, (255.0 * fade) as u8]))),
+            }
+        }
+    }
+    // a failed tool call: a quick red puff from the head
+    let t = el - a.failed_at;
+    if (0.0..1.1).contains(&t) {
+        let u = t / 1.1;
+        for k in 0..8 {
+            let ang = k as f32 / 8.0 * std::f32::consts::TAU + a.phase;
+            let r = 5.0 + u * 15.0;
+            let (x, y) = (cx + ang.cos() * r, top + 12.0 + ang.sin() * r * 0.7);
+            items.push((d + 0.003, TexKey::Fx(Fx::Dot), dot(x, y, 3.6 * (1.0 - u) + 1.2, [222, 64, 52, (230.0 * (1.0 - u) * a.alpha) as u8])));
+        }
+    }
+    // a compaction: the desk's papers fly up and away, with a glint or two
+    let t = el - a.tidied_at;
+    if (0.0..2.4).contains(&t) {
+        let u = t / 2.4;
+        for k in 0..6 {
+            let s = k as f32;
+            let q = (u * 1.4 - s * 0.06).clamp(0.0, 1.0);
+            let x = cx - 16.0 + s * 6.5 + (q * 9.0 + s).sin() * 6.0;
+            let y = by - 34.0 - q * 46.0 - (std::f32::consts::PI * q).sin() * 10.0;
+            let fade = (1.0 - q) * (q * 8.0).min(1.0) * a.alpha;
+            let tilt = (q * 6.0 + s).sin() * 0.5;
+            let (cs, sn) = (tilt.cos(), tilt.sin());
+            let (pw, ph) = (6.0, 7.5);
+            items.push((d + 0.003, TexKey::Fx(Fx::Paper), Instance::affine([pw * cs, pw * sn, -ph * sn, ph * cs], [x, y], FULL).alpha(fade)));
+        }
+        for k in 0..4 {
+            let tw = ((now * 7.0 + k as f32 * 1.7).sin() * 0.5 + 0.5) * (1.0 - u);
+            let (x, y) = (cx - 18.0 + k as f32 * 12.0, by - 52.0 - (k % 2) as f32 * 14.0);
+            items.push((d + 0.0032, TexKey::Fx(Fx::Dot), dot(x, y, 1.5 + tw * 2.0, [255, 236, 150, (255.0 * tw * a.alpha) as u8])));
+        }
+    }
+}
 
 /// The prop's art rect, scale, horizontal centre and baseline, like `propBox`. The art's base is
 /// drawn for the classic angle, where it reaches half a diamond below the footprint's centre;
 /// anchoring there, rather than at whichever corner is lowest, keeps it on the floor at any angle.
 fn prop_box(p: &Prop, v: &View) -> Option<(&'static str, [u32; 4], f32, f32, f32)> {
-    let &(file, rect) = meta().items.get(p.name)?;
+    let &(file, rect) = super::assets::item(p.name)?;
     let (w, h) = (rect[2] as f32, rect[3] as f32);
     let s = prop_width(p.name).map(|pw| pw / w).unwrap_or_else(|| prop_height(p.name).unwrap_or(50.0) / h);
     let (x, y, fx, fy) = (p.x as f32, p.y as f32, p.fx as f32, p.fy as f32);
@@ -363,7 +448,7 @@ fn prop_quad(p: &Prop, v: &View, o: &Layout) -> Option<(TexKey, Instance, [f32; 
         let (toward, right) = v.facing(f);
         if toward {
             flip = right != front_right;
-        } else if let Some(&(bf, br)) = m.items.get(&format!("{}_back", p.name)) {
+        } else if let Some(&(bf, br)) = super::assets::item(&format!("{}_back", p.name)) {
             // the back panel faces the other way from the front
             (file, r, flip) = (bf, br, !right != back_right);
         }
@@ -430,7 +515,8 @@ pub fn build(inp: &Inputs) -> Scene {
     let mut occupied = vec![false; o.desks.len()];
     for a in &w.avatars {
         if let Some(SeatRef::Desk(i)) = a.seated {
-            occupied[i] = true;
+            // a character of your own has no desk in its sheets: the office draws it
+            occupied[i] = !crate::custom::character_of(a.char_id).is_some_and(|c| c.bare_desk);
         }
     }
     let desk_at: std::collections::HashMap<(i32, i32), usize> = o.desks.iter().enumerate().map(|(i, d)| ((d.x, d.y), i)).collect();
@@ -484,11 +570,19 @@ pub fn build(inp: &Inputs) -> Scene {
     }
     for a in &w.avatars {
         let seat = a.seated.map(|r| w.s.seat(r));
-        let d = match seat {
+        let mut d = match seat {
             // the plan's seat hints are written for the default angle, relative to the seat tile
             Some(s) => v.depth(s.x as f32 + 0.5, s.y as f32 + 0.5) + s.depth.map_or(0.65, |h| h - (s.x + s.y) as f32),
             None => v.depth(a.x + 0.5, a.y + 0.5) + 0.5,
         };
+        // a character of your own at a desk: over the desk and its chair, under the desk's front
+        if let Some(SeatRef::Desk(i)) = a.seated.filter(|_| crate::custom::character_of(a.char_id).is_some_and(|c| c.bare_desk)) {
+            let desk = o.desks.get(i).and_then(|dk| o.props.iter().find(|p| p.atlas == Atlas::Desk && (p.x, p.y) == (dk.x, dk.y)));
+            if let Some((p, (_, inst, _))) = desk.and_then(|p| Some((p, prop_quad(p, v, o)?))) {
+                d = d.max(prop_depth(p, v) + 0.001);
+                items.push((d + 0.004, TexKey::Atlas(DESK_FRONT), inst));
+            }
+        }
         let col = a.color();
         // the shadow and the selection ring lie on the floor, so they turn with it
         let feet = |r: f32| v.plane([a.x + 0.5 - r, a.y + 0.5 - r, 0.0], [2.0 * r, 0.0, 0.0], [0.0, 2.0 * r, 0.0]);
@@ -496,20 +590,28 @@ pub fn build(inp: &Inputs) -> Scene {
             let (mm, t) = feet(0.3);
             items.push((d - 0.002, TexKey::Fx(Fx::Shadow), Instance::affine(mm, t, FULL).tint([10, 12, 20, (0.22 * 255.0 * a.alpha) as u8])));
         }
-        let ring = if inp.selected == Some(a.id) { 1.0 } else if inp.hover == Some(Hit::Agent(a.id)) { 0.7 } else { 0.0 };
+        // everyone stands on a faint ring of their colour, which tells apart two people who look
+        // alike, and fills round as their context fills: red near where it compacts
+        let ring = a.alpha * if inp.selected == Some(a.id) { 1.0 } else if inp.hover == Some(Hit::Agent(a.id)) { 0.7 } else { 0.26 };
         if ring > 0.0 {
             let pulse = if inp.selected == Some(a.id) { 1.0 + 0.04 * (inp.now * 4.0).sin() } else { 1.0 };
             let (mm, t) = feet(0.4 * pulse);
             items.push((d - 0.001, TexKey::Fx(Fx::Ring), Instance::affine(mm, t, FULL).tint([col[0], col[1], col[2], (255.0 * ring) as u8])));
+            let steps = (a.gauge * ARC_STEPS as f32).ceil() as u8;
+            if steps > 0 {
+                let c = if a.gauge_near { NEAR } else { col };
+                items.push((d - 0.0009, TexKey::Fx(Fx::Arc(steps.min(ARC_STEPS))), Instance::affine(mm, t, FULL).tint([c[0], c[1], c[2], (255.0 * a.alpha * 0.85) as u8])));
+            }
         }
         let lift = hop(w, a.id);
         let now_parts = parts(&a.pose(), a.char_id, w, v, inp.anim_fps);
         let Some(main) = now_parts.first() else { continue };
-        let desk = main.key.starts_with("typ") || main.key.starts_with("read");
+        // the built-in desk sheets draw the desk; a character of your own is measured by its frame
+        let desk = a.char_id < crate::custom::BUILTIN && (main.key.starts_with("typ") || main.key.starts_with("read"));
         let (cx, by) = (main.cx, main.by - lift);
         let mut dh = 0.0;
         for (k, pt) in now_parts.iter().enumerate() {
-            if let Some((key, inst, _, h)) = part_quad(pt, a, a.alpha, lift) {
+            if let Some((key, inst, _, h)) = part_quad(pt, a.alpha, lift) {
                 if k == 0 {
                     dh = h;
                 }
@@ -519,7 +621,7 @@ pub fn build(inp: &Inputs) -> Scene {
         // the pose it just left fades out over the new one
         if let Some(f) = a.fade {
             for (k, pt) in parts(&f.pose, a.char_id, w, v, inp.anim_fps).iter().enumerate() {
-                if let Some((key, inst, _, _)) = part_quad(pt, a, a.alpha * (f.left / f.dur).clamp(0.0, 1.0), 0.0) {
+                if let Some((key, inst, _, _)) = part_quad(pt, a.alpha * (f.left / f.dur).clamp(0.0, 1.0), 0.0) {
                     items.push((d + 0.0006 + k as f32 * 0.0001, key, inst));
                 }
             }
@@ -542,6 +644,7 @@ pub fn build(inp: &Inputs) -> Scene {
             _ => None,
         };
         sc.heads.push(Head { id: a.id, x: cx, y: head_y, top, bottom: by, paddle });
+        signals(a, w, inp.now, cx, top, by, d, &mut items);
         // the clickable body: a narrow box around the figure, not the whole frame
         let bw = match (desk, video) {
             (true, _) => 32.0,
@@ -557,7 +660,8 @@ pub fn build(inp: &Inputs) -> Scene {
     if let Some((c, _)) = &inp.city {
         let board = inp.board.map(|l| l.id);
         city::tower(&mut sc.list.items, office_start, *c, v, o, |k| match k {
-            TexKey::Sheet(_) | TexKey::Fx(Fx::Shadow | Fx::Ring | Fx::Dot) => false,
+            TexKey::Sheet(_) | TexKey::Fx(Fx::Shadow | Fx::Ring | Fx::Dot | Fx::Arc(_) | Fx::Paper) => false,
+            TexKey::Atlas(f) if *f == SIGNALS => false,
             TexKey::Layer(id) => Some(*id) != board,
             _ => true,
         });
@@ -631,7 +735,7 @@ fn ball(w: &World, v: &View, heads: &[Head], list: &mut DrawList) {
 /// of the player on its side of the screen.
 fn score_cards(p: &Prop, rect: [f32; 4], flipped: bool, o: &Layout, v: &View) -> Option<[[f32; 4]; 2]> {
     let m = meta();
-    let &(_, item) = m.items.get(p.name)?;
+    let &(_, item) = super::assets::item(p.name)?;
     let k = rect[2] / item[2] as f32;
     let mut cards = m.score_cards.map(|c| {
         let x = if flipped { rect[0] + rect[2] - (c[0] + c[2]) as f32 * k } else { rect[0] + c[0] as f32 * k };

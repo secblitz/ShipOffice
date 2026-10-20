@@ -38,6 +38,14 @@ pub struct AgentState {
     pub auto_at: Option<u64>,
     pub compactions: u32,
     pub compacted_at: Option<SystemTime>,
+    /// what it is asking you, while it waits on you (a permission prompt, a question)
+    pub needs: Option<String>,
+    pub needs_since: Option<SystemTime>,
+    /// tool calls that failed, and when the last one did
+    pub errors: u32,
+    pub error_at: Option<SystemTime>,
+    /// the helpers started with it: one phase of a workflow, or a batch spawned at once
+    pub team: Option<String>,
     pub done: bool,
     pub last: SystemTime,
     pub since: SystemTime,
@@ -60,6 +68,11 @@ impl AgentState {
             auto_at: None,
             compactions: 0,
             compacted_at: None,
+            needs: None,
+            needs_since: None,
+            errors: 0,
+            error_at: None,
+            team: None,
             tokens: 0,
             done: false,
             last: at,
@@ -100,9 +113,14 @@ pub struct Session {
     pub files_touched: u32,
     /// the log has marked a compaction, so a drop in context is not taken for one
     marked: bool,
+    /// the last helper started and its batch, so helpers spawned together form a team
+    last_spawn: Option<(SystemTime, String)>,
+    batches: u32,
 }
 
 const FEED_MAX: usize = 200;
+/// Helpers started this close together are one batch.
+const BATCH: Duration = Duration::from_secs(4);
 /// Finished helpers a session remembers.
 const KEEP_DONE: usize = 64;
 
@@ -130,6 +148,8 @@ impl Session {
             feed: VecDeque::new(),
             files_touched: 0,
             marked: false,
+            last_spawn: None,
+            batches: 0,
         }
     }
 
@@ -175,6 +195,13 @@ impl Session {
             self.started = at;
         }
         let who = e.agent.clone();
+        // anything it does after asking means it got its answer
+        if matches!(e.kind, EventKind::UserPrompt { .. } | EventKind::AssistantText { .. } | EventKind::Thinking { .. } | EventKind::ToolCall { .. } | EventKind::ToolResult { .. }) {
+            if let Some(a) = self.agents.get_mut(&who).filter(|a| a.needs_since.is_some_and(|t| at >= t)) {
+                a.needs = None;
+                a.needs_since = None;
+            }
+        }
         match &e.kind {
             EventKind::Meta { cwd, branch, model, title } => {
                 if who == AgentRef::Lead && cwd.is_some() {
@@ -244,6 +271,8 @@ impl Session {
                 a.last = at;
                 if !ok {
                     a.thought = Some("That didn't work".into());
+                    a.errors += 1;
+                    a.error_at = Some(at);
                 }
             }
             EventKind::SubagentStart { agent_id, description, kind } => {
@@ -255,6 +284,19 @@ impl Session {
                 a.activity = Activity::Thinking;
                 a.since = at;
                 a.last = at;
+                // helpers spawned within a few seconds of each other are a batch working together
+                let batch = match &self.last_spawn {
+                    Some((t, b)) if at.duration_since(*t).unwrap_or_default() < BATCH && t.duration_since(at).unwrap_or_default() < BATCH => b.clone(),
+                    _ => {
+                        self.batches += 1;
+                        format!("batch {}", self.batches)
+                    }
+                };
+                self.last_spawn = Some((at, batch.clone()));
+                let a = self.agent(&r, at);
+                if a.team.as_ref().is_none_or(|t| t.starts_with("batch ")) {
+                    a.team = Some(batch);
+                }
                 self.feed(at, &AgentRef::Lead, "Spawned", description);
             }
             EventKind::SubagentEnd { agent_id } => {
@@ -303,6 +345,7 @@ impl Session {
                 }
             }
             EventKind::ContextWindow(w) => self.window = Some(*w),
+            EventKind::Team { name } => self.agent(&who, at).team = Some(name.clone()),
             EventKind::TurnEnd => {
                 self.set_status(Status::NeedsYou, at);
                 self.waiting_for = Some("Your turn".into());
@@ -315,6 +358,8 @@ impl Session {
                 self.waiting_for = Some(text.clone());
                 let a = self.agent(&who, at);
                 a.activity = Activity::Waiting;
+                a.needs = Some(text.clone());
+                a.needs_since = Some(at);
                 self.feed(at, &who, "Needs you", text);
             }
         }
@@ -342,6 +387,13 @@ impl Session {
             let cut = ends[done - KEEP_DONE];
             self.agents.retain(|_, a| !a.done || a.last >= cut);
         }
+    }
+
+    /// Whether an agent that should be working has done nothing for `limit`: no line in its log,
+    /// no tool call, no reply. One waiting on you or on its helpers is not stuck.
+    pub fn stuck(&self, a: &AgentState, now: SystemTime, limit: Duration) -> bool {
+        let working = if a.id == AgentRef::Lead { self.status == Status::Working } else { !a.done };
+        working && a.needs.is_none() && a.activity != Activity::Waiting && now.duration_since(a.last).unwrap_or_default() > limit
     }
 
     /// API list price estimate in USD. Real billing depends on plan and model.
@@ -471,6 +523,34 @@ mod tests {
 
     fn ev(agent: AgentRef, kind: EventKind) -> Event {
         Event { session: SessionKey { harness: "t", id: "s".into() }, agent, at: SystemTime::now(), kind }
+    }
+
+    #[test]
+    fn questions_errors_and_silence_are_signals() {
+        let mut s = Session::new(SessionKey { harness: "t", id: "s".into() }, "Test", SystemTime::now());
+        let lead = AgentRef::Lead;
+        s.apply(&ev(lead.clone(), EventKind::UserPrompt { text: "go".into() }));
+        s.apply(&ev(lead.clone(), EventKind::NeedsInput { text: "Allow Bash?".into() }));
+        assert_eq!(s.agents[&lead].needs.as_deref(), Some("Allow Bash?"));
+        // asking is not being stuck
+        let later = SystemTime::now() + Duration::from_secs(3600);
+        assert!(!s.stuck(&s.agents[&lead], later, Duration::from_secs(480)));
+        // an answer clears the question; a failed call counts
+        s.apply(&ev(lead.clone(), EventKind::ToolCall { call_id: "1".into(), name: "Bash".into(), summary: "ls".into() }));
+        assert!(s.agents[&lead].needs.is_none());
+        s.apply(&ev(lead.clone(), EventKind::ToolResult { call_id: "1".into(), ok: false }));
+        assert_eq!(s.agents[&lead].errors, 1);
+        assert!(s.agents[&lead].error_at.is_some());
+        // working, then nothing for longer than the limit
+        assert!(!s.stuck(&s.agents[&lead], SystemTime::now() + Duration::from_secs(60), Duration::from_secs(480)));
+        assert!(s.stuck(&s.agents[&lead], later, Duration::from_secs(480)));
+        // helpers started together are one team
+        for i in 0..3 {
+            s.apply(&ev(lead.clone(), EventKind::SubagentStart { agent_id: format!("h{i}"), description: format!("t{i}"), kind: None }));
+        }
+        let teams: std::collections::HashSet<_> = (0..3).map(|i| s.agents[&AgentRef::Sub(format!("h{i}"))].team.clone()).collect();
+        assert_eq!(teams.len(), 1);
+        assert!(teams.iter().next().unwrap().is_some());
     }
 
     #[test]

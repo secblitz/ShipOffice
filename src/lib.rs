@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod config;
+pub mod custom;
 pub mod harness;
 pub mod model;
 pub mod office;

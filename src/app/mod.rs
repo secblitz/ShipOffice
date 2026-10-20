@@ -4,7 +4,10 @@
 pub mod demo;
 pub mod hud;
 pub mod icon;
+pub mod minimap;
+pub mod notify;
 pub mod overlay;
+pub mod replay;
 pub mod popover;
 pub mod portrait;
 pub mod share;
@@ -43,6 +46,8 @@ pub enum Message {
     Tick(Instant),
     /// the window is shown (true) or minimized (false)
     Visible(bool),
+    /// the window got (true) or lost the keyboard
+    Focus(bool),
     Stage(Size),
     ScaleFactor(f32),
     SelectTab(usize),
@@ -86,6 +91,51 @@ pub enum Message {
     CopyCaption,
     ShowCardFolder,
     CloseCard,
+    /// typed in the crew list's search
+    CrewQuery(String),
+    CrewFilter(CrewFilter),
+    /// pick someone and follow them there
+    Jump(u32),
+    /// jump to the next agent that waits on you
+    NextNeeding,
+    /// centre the view on this world point (from the minimap)
+    LookAt(f32, f32),
+    Replay(ReplayAction),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ReplayAction {
+    /// play the last hour of the session on screen
+    Start,
+    /// back to the live office
+    Live,
+    PlayPause,
+    Speed(f32),
+    /// seconds into the replay
+    Seek(f32),
+}
+
+/// Which part of the crew the list shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CrewFilter {
+    #[default]
+    All,
+    NeedsYou,
+    Stuck,
+    Errors,
+    NearFull,
+}
+
+impl CrewFilter {
+    pub fn keeps(self, a: &crate::office::world::Avatar) -> bool {
+        match self {
+            CrewFilter::All => true,
+            CrewFilter::NeedsYou => a.needs.is_some(),
+            CrewFilter::Stuck => a.stuck,
+            CrewFilter::Errors => a.errors > 0,
+            CrewFilter::NearFull => a.gauge_near,
+        }
+    }
 }
 
 /// The Locked in card, from the moment the office is captured to the preview.
@@ -136,6 +186,13 @@ pub enum Setting {
     OfficeStyle(Option<String>),
     SnapView(bool),
     Backdrop(crate::config::Backdrop),
+    NotifyNeeds(bool),
+    NotifyDone(bool),
+    StuckMinutes(u64),
+    BuiltinCrew(bool),
+    /// one of your characters (by folder) or props (`props/<item>`) on or off
+    ContentOn(String, bool),
+    OpenContent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -190,6 +247,14 @@ pub struct App {
     pub stage: Size,
     /// minimized windows tick slowly
     hidden: bool,
+    /// the window has the keyboard; notifications are only for when it does not
+    focused: bool,
+    /// what has been notified: each question once, each finished turn once
+    notified: std::collections::HashSet<(SessionKey, String, SystemTime)>,
+    last_notice: Option<Instant>,
+    /// each session's recent events, for replays
+    history: HashMap<SessionKey, replay::History>,
+    pub replay: Option<replay::Replay>,
     scale_factor: f32,
     pub scene: Scene,
     pub hover: Option<Hit>,
@@ -198,6 +263,8 @@ pub struct App {
     pub board_open: bool,
     pub settings_open: bool,
     pub crew_open: bool,
+    pub crew_query: String,
+    pub crew_filter: CrewFilter,
     pub sharing: Option<Sharing>,
     pub color_drafts: HashMap<String, String>,
     pub harnesses: Vec<HarnessInfo>,
@@ -233,6 +300,8 @@ pub struct App {
     inspect_pending: bool,
     /// debug: make the Locked in card this many seconds in
     card_at: Option<f32>,
+    /// debug: start a replay this many seconds in
+    replay_at: Option<f32>,
     /// when the active office was last regenerated (the dice spins)
     pub rolled: Option<Instant>,
     next_uid: u64,
@@ -276,6 +345,11 @@ impl App {
     fn boot() -> (Self, Task<Message>) {
         let loaded = Config::load();
         style::apply(&loaded.appearance);
+        // your characters and props live beside the config file
+        if let Some(dir) = Config::path().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
+            crate::custom::set_dir(dir);
+        }
+        crate::custom::set_pool(&loaded.custom);
         let cfg = Arc::new(RwLock::new(loaded));
         let rx = sources::spawn(cfg.clone());
         let harnesses = harness::all().iter().map(|a| HarnessInfo { id: a.id(), name: a.name(), roots: a.default_roots(), found: 0 }).collect::<Vec<_>>();
@@ -289,6 +363,11 @@ impl App {
             active: 0,
             cam: Camera::new(),
             hidden: false,
+            focused: true,
+            notified: Default::default(),
+            last_notice: None,
+            history: HashMap::new(),
+            replay: None,
             stage: Size::new(1320.0, 840.0),
             scale_factor: 1.0,
             scene: Scene::default(),
@@ -298,6 +377,8 @@ impl App {
             board_open: false,
             settings_open: false,
             crew_open: false,
+            crew_query: String::new(),
+            crew_filter: CrewFilter::All,
             sharing: None,
             color_drafts: HashMap::new(),
             harnesses,
@@ -325,6 +406,7 @@ impl App {
             colors_open: false,
             inspect_pending: false,
             card_at: None,
+            replay_at: None,
             rolled: None,
             next_uid: 1,
             shot_taken: false,
@@ -340,6 +422,8 @@ impl App {
                     None if part == "colors" => app.colors_open = true,
                     None if part == "inspect" => app.inspect_pending = true,
                     None if part == "card" => app.card_at = Some(5.0),
+                    None if part == "crew" => app.crew_open = true,
+                    Some(("replay", secs)) => app.replay_at = secs.parse().ok(),
                     Some(("card", secs)) => app.card_at = secs.parse().ok(),
                     Some(("page", "look")) => app.page = Page::Look,
                     Some(("page", "sources")) => app.page = Page::Sources,
@@ -370,12 +454,25 @@ impl App {
     /// The camera is turning, tilting, zooming, fitting or following someone, or someone in the
     /// office is walking or changing pose: all of these glide at 60 Hz.
     fn moving(&self) -> bool {
-        let people = self.tab().is_some_and(|t| t.world.avatars.iter().any(|a| a.anim == crate::office::world::Anim::Walk || a.fade.is_some()));
+        let people = self.shown().is_some_and(|w| w.avatars.iter().any(|a| a.anim == crate::office::world::Anim::Walk || a.fade.is_some())) || self.replay.as_ref().is_some_and(|r| r.playing);
         (self.yaw - self.yaw_to).abs() > 1e-3 || (self.pitch - self.pitch_to).abs() > 1e-3 || self.zoom_to.is_some() || self.fitting || self.follow || people
     }
 
     pub fn session(&self) -> Option<&Session> {
-        self.tab().and_then(|t| self.sessions.get(&t.key))
+        let t = self.tab()?;
+        match &self.replay {
+            Some(r) if r.key == t.key => Some(&r.session),
+            _ => self.sessions.get(&t.key),
+        }
+    }
+
+    /// The office on screen: the active tab's, or its replay while one plays.
+    pub fn shown(&self) -> Option<&World> {
+        let t = self.tab()?;
+        match &self.replay {
+            Some(r) if r.key == t.key => Some(&r.world),
+            _ => Some(&t.world),
+        }
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -392,7 +489,8 @@ impl App {
             iced::time::every(every).map(Message::Tick),
             window::events().filter_map(|(_, e)| match e {
                 window::Event::Resized(s) => Some(Message::Visible(s.width > 0.0 && s.height > 0.0)),
-                window::Event::Focused => Some(Message::Visible(true)),
+                window::Event::Focused => Some(Message::Focus(true)),
+                window::Event::Unfocused => Some(Message::Focus(false)),
                 _ => None,
             }),
             keyboard::listen().map(Message::Key),
@@ -406,6 +504,12 @@ impl App {
                 return Task::batch([self.debug_shot(), self.capture()]);
             }
             Message::Visible(v) => self.hidden = !v,
+            Message::Focus(f) => {
+                self.focused = f;
+                if f {
+                    self.hidden = false;
+                }
+            }
             Message::Shot(shot) => {
                 if let Ok(path) = std::env::var("SHIPOFFICE_SCREENSHOT") {
                     let (w, h) = (shot.size.width, shot.size.height);
@@ -440,7 +544,7 @@ impl App {
             }
             Message::ZoomAt(p, f) => {
                 let z = self.zoom_to.map_or(self.cam.z, |(z, _)| z);
-                self.zoom_to = Some(((z * f).clamp(1.0, self.cam.max_z), p));
+                self.zoom_to = Some(((z * f).clamp(1.0, self.cam.max_z()), p));
                 self.fitting = false;
             }
             Message::Zoom(f) => return self.update(Message::ZoomAt(Point::new(self.stage.width / 2.0, self.stage.height / 2.0), f)),
@@ -543,6 +647,32 @@ impl App {
             Message::ToggleCrew => {
                 self.crew_open = !self.crew_open;
                 self.mark("crew", self.crew_open);
+                if self.crew_open {
+                    return iced::widget::operation::focus(hud::CREW_SEARCH);
+                }
+            }
+            Message::CrewQuery(q) => self.crew_query = q,
+            Message::CrewFilter(f) => self.crew_filter = f,
+            Message::Jump(id) => {
+                self.mark("inspector", self.selected != Some(id));
+                self.selected = Some(id);
+                self.board_open = false;
+                self.follow = true;
+            }
+            Message::NextNeeding => {
+                let ids: Vec<u32> = self.shown().map(|w| w.avatars.iter().filter(|a| a.needs.is_some()).map(|a| a.id).collect()).unwrap_or_default();
+                let next = self.selected.and_then(|s| ids.iter().position(|&i| i == s)).map_or(0, |i| (i + 1) % ids.len().max(1));
+                if let Some(&id) = ids.get(next) {
+                    return self.update(Message::Jump(id));
+                }
+            }
+            Message::Replay(a) => self.replay_action(a),
+            Message::LookAt(x, y) => {
+                self.follow = false;
+                self.fitting = false;
+                (self.cam.cx, self.cam.cy) = (x, y);
+                self.cam.clamp();
+                self.zoomed_at = Instant::now();
             }
             Message::ToggleSettings => {
                 self.settings_open = !self.settings_open;
@@ -612,7 +742,7 @@ impl App {
             None => office,
         };
         let stats = share::Stats::gather(self.tabs.iter().filter_map(|t| self.sessions.get(&t.key)));
-        let crew: Vec<share::Member> = self.tabs.iter().flat_map(|t| &t.world.avatars).map(|a| share::Member { face: portrait::face_image(a.char_id, &a.palette), ring: a.color() }).collect();
+        let crew: Vec<share::Member> = self.tabs.iter().flat_map(|t| &t.world.avatars).map(|a| share::Member { face: portrait::face_image(a.char_id), ring: a.color() }).collect();
         let pal = style::p();
         let rgb = |c: iced::Color| [c.r, c.g, c.b].map(|v| (v * 255.0).round() as u8);
         let look = share::Look { bg: rgb(pal.bg), bg2: rgb(pal.bg2), surface: rgb(pal.surface), raised: rgb(pal.raised), text: rgb(pal.text), muted: rgb(pal.muted), faint: rgb(pal.faint), accent: rgb(pal.accent), light: pal.light };
@@ -629,12 +759,20 @@ impl App {
         if self.settings_open && !matches!(key, keyboard::Key::Named(Named::Escape)) && !modifiers.command() {
             return Task::none();
         }
+        // nor is typing in the crew list's search
+        if self.crew_open && matches!(key, keyboard::Key::Character(_)) && !modifiers.command() {
+            return Task::none();
+        }
         match key.as_ref() {
             keyboard::Key::Named(Named::Escape) => {
                 if matches!(self.sharing, Some(Sharing::Ready(_))) {
                     self.sharing = None;
                 } else if self.menu.is_some() {
                     self.menu = None;
+                } else if self.crew_open {
+                    self.crew_open = false;
+                } else if self.replay.is_some() {
+                    self.replay_action(ReplayAction::Live);
                 } else if self.settings_open {
                     self.settings_open = false;
                 } else {
@@ -665,8 +803,8 @@ impl App {
     }
 
     fn step_selection(&mut self, d: i32) {
-        let Some(t) = self.tab() else { return };
-        let ids: Vec<u32> = t.world.avatars.iter().map(|a| a.id).collect();
+        let Some(w) = self.shown() else { return };
+        let ids: Vec<u32> = w.avatars.iter().map(|a| a.id).collect();
         if ids.is_empty() {
             return;
         }
@@ -690,8 +828,7 @@ impl App {
             }
             Some(Hit::Prop(i)) => {
                 // furniture points at whoever is using it
-                let Some(t) = self.tab() else { return };
-                let w = &t.world;
+                let Some(w) = self.shown() else { return };
                 let p = &w.s.layout.props[i];
                 let user = match p.atlas {
                     Atlas::Desk => w.s.layout.desks.iter().position(|d| d.x == p.x && d.y == p.y).and_then(|d| w.s.desk_owner[d]),
@@ -718,7 +855,6 @@ impl App {
         let b = Bounds::of(&t.world.s.layout);
         let narrow = self.stage.width < 900.0;
         let fresh = fresh || self.cam.bounds != b;
-        self.cam.max_z = crate::render::max_zoom(&t.world.s.layout);
         self.cam.layout(b, self.stage.width, self.stage.height, if narrow { PAD_TOP + 40.0 } else { PAD_TOP }, PAD_BOTTOM, fresh);
     }
 
@@ -735,8 +871,13 @@ impl App {
             let s = self.sessions.entry(e.session.clone()).or_insert_with(|| Session::new(e.session.clone(), &name, e.at));
             s.apply(&e);
             if let Some(t) = self.tabs.iter_mut().find(|t| t.key == e.session) {
-                t.world.cue(&e);
+                t.world.cue(&e, SystemTime::now());
             }
+            self.history.entry(e.session.clone()).or_default().push(e);
+        }
+        // sessions that are gone take their history with them
+        if self.history.len() > self.sessions.len() {
+            self.history.retain(|k, _| self.sessions.contains_key(k));
         }
     }
 
@@ -789,6 +930,105 @@ impl App {
         if before != self.active || self.cam.bounds == Bounds::default() {
             self.selected = None;
             self.relayout(true);
+        }
+    }
+
+    fn replay_action(&mut self, a: ReplayAction) {
+        match a {
+            ReplayAction::Start => {
+                let Some(t) = self.tab() else { return };
+                let (Some(h), Some(s)) = (self.history.get(&t.key), self.sessions.get(&t.key)) else { return };
+                self.replay = replay::Replay::new(t.key.clone(), h, &s.harness_name, &t.world);
+                self.selected = None;
+                self.mark("replay", self.replay.is_some());
+            }
+            ReplayAction::Live => {
+                self.replay = None;
+                self.selected = None;
+                self.mark("replay", false);
+            }
+            ReplayAction::PlayPause => {
+                if let Some(r) = self.replay.as_mut() {
+                    if !r.playing && r.at >= r.to {
+                        r.seek(r.from);
+                    }
+                    r.playing = !r.playing;
+                }
+            }
+            ReplayAction::Speed(v) => {
+                if let Some(r) = self.replay.as_mut() {
+                    r.speed = v;
+                }
+            }
+            ReplayAction::Seek(secs) => {
+                if let Some(r) = self.replay.as_mut() {
+                    let to = r.from + Duration::from_secs_f32(secs.max(0.0));
+                    // dragging fires often: only rebuild for a real move
+                    if (secs - r.offset()).abs() >= 1.0 {
+                        r.seek(to);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Tells the desktop when an agent asks you something (or a session finishes its turn) while
+    /// the window is in the background: each question once, and at most one notice every few
+    /// seconds, so a crowd asking at once is one notice.
+    fn notices(&mut self) {
+        let cfg = self.config();
+        let stuck = Duration::from_secs(cfg.stuck_minutes.clamp(1, 240) * 60);
+        for t in &mut self.tabs {
+            t.world.stuck_after = stuck;
+        }
+        let now = SystemTime::now();
+        let recent = |t: SystemTime| now.duration_since(t).unwrap_or_default() < Duration::from_secs(90);
+        let mut asks: Vec<(String, String)> = Vec::new();
+        for s in self.sessions.values().filter(|s| !Demo::is_demo(&s.key)) {
+            for a in s.agents.values() {
+                if let (Some(q), Some(since)) = (&a.needs, a.needs_since) {
+                    let key = (s.key.clone(), a.label.clone(), since);
+                    if recent(since) && self.notified.insert(key) && cfg.notify_needs {
+                        asks.push((format!("{} · {}", s.project(), a.label), q.clone()));
+                    }
+                }
+            }
+            if s.status == Status::NeedsYou && s.waiting_for.as_deref() == Some("Your turn") && recent(s.status_since) {
+                let key = (s.key.clone(), String::new(), s.status_since);
+                if self.notified.insert(key) && cfg.notify_done {
+                    asks.push((s.project(), "Finished its turn: your move".into()));
+                }
+            }
+        }
+        // old entries go once they can no longer come round again
+        self.notified.retain(|k| recent(k.2));
+        let quiet = self.last_notice.is_some_and(|t| t.elapsed() < Duration::from_secs(5));
+        if asks.is_empty() || (self.focused && !self.hidden) || quiet {
+            return;
+        }
+        self.last_notice = Some(Instant::now());
+        match asks.len() {
+            1 => notify::send(&asks[0].0, &asks[0].1),
+            n => notify::send(&format!("{n} agents need you"), &asks.iter().map(|a| a.0.as_str()).collect::<Vec<_>>().join(", ")),
+        }
+    }
+
+    /// Each avatar's context gauge, from its agent's context and window.
+    fn gauges(&mut self) {
+        let mut found = Vec::new();
+        for (i, t) in self.tabs.iter().enumerate() {
+            let Some(s) = self.sessions.get(&t.key) else { continue };
+            for a in &t.world.avatars {
+                let Some(st) = s.agents.get(&a.agent) else { continue };
+                let set = if crate::harness::compaction::knows(s.key.harness) { self.settings_of(s, &a.agent) } else { Default::default() };
+                let (share, _, near) = fullness(st.context, s.window(&a.agent, &set).0, &set);
+                found.push((i, a.id, share, near));
+            }
+        }
+        for (i, id, share, near) in found {
+            if let Some(a) = self.tabs[i].world.avatars.iter_mut().find(|a| a.id == id) {
+                (a.gauge, a.gauge_near) = (share, near);
+            }
         }
     }
 
@@ -856,11 +1096,25 @@ impl App {
                 s.tick(wall);
             }
             self.refresh_tabs();
+            self.gauges();
+            self.notices();
+        }
+        if self.replay_at.is_some_and(|t| self.started.elapsed().as_secs_f32() >= t) {
+            self.replay_at = None;
+            self.replay_action(ReplayAction::Start);
+        }
+        // a replay plays only while its office is on screen
+        if self.replay.as_ref().is_some_and(|r| self.tab().is_none_or(|t| t.key != r.key)) {
+            self.replay = None;
+            self.selected = None;
+        }
+        if let Some(r) = self.replay.as_mut() {
+            r.tick(dt);
         }
         let mut grew = false;
         for (i, t) in self.tabs.iter_mut().enumerate() {
             if let Some(s) = self.sessions.get(&t.key) {
-                t.world.sync(s);
+                t.world.sync(s, SystemTime::now());
             }
             t.world.step(dt);
             // a crew that outgrew its room got a bigger one: paint it afresh
@@ -877,15 +1131,15 @@ impl App {
             self.tab_since = Instant::now();
             self.relayout(false);
         }
-        if self.selected.is_some_and(|id| self.tab().is_none_or(|t| t.world.avatar(id).is_none())) {
+        if self.selected.is_some_and(|id| self.shown().is_none_or(|w| w.avatar(id).is_none())) {
             self.selected = None;
             self.follow = false;
         }
         if self.follow {
             if let Some(h) = self.selected.and_then(|id| self.scene.heads.iter().find(|h| h.id == id)).copied() {
                 let e = (dt * 3.5).min(1.0);
-                // as close as following someone in a small office, however big this one is
-                let z = 1.9 * self.cam.max_z / crate::render::MAX_ZOOM;
+                // close, but short of the furthest zoom, so the people around them show too
+                let z = (0.7 * self.cam.max_z()).max(1.0);
                 self.cam.z += (z - self.cam.z) * e;
                 self.cam.cx += (h.x - self.cam.cx) * e;
                 self.cam.cy += ((h.top + h.bottom) / 2.0 - self.cam.cy) * e;
@@ -899,7 +1153,7 @@ impl App {
             let _ = self.update(Message::LockedIn);
         }
         if self.inspect_pending {
-            if let Some(id) = self.tab().and_then(|t| t.world.avatars.first()).map(|a| a.id) {
+            if let Some(id) = self.shown().and_then(|w| w.avatars.first()).map(|a| a.id) {
                 self.inspect_pending = false;
                 self.selected = Some(id);
                 self.mark("inspector", true);
@@ -1043,7 +1297,7 @@ impl App {
             (c, crate::render::city::sky(c, &view, aspect, self.cam.z, pan, now))
         });
         self.scene = scene::build(&scene::Inputs {
-            world: &t.world,
+            world: self.shown().unwrap_or(&t.world),
             view: &view,
             statics: t.statics.as_ref(),
             board: t.board.as_ref(),
@@ -1073,6 +1327,31 @@ impl App {
                 Setting::Demo(v) => c.demo_when_empty = v,
                 Setting::ShowFps(v) => c.show_fps = v,
                 Setting::SnapView(v) => c.snap_view = v,
+                Setting::NotifyNeeds(v) => c.notify_needs = v,
+                Setting::NotifyDone(v) => c.notify_done = v,
+                Setting::StuckMinutes(v) => c.stuck_minutes = v,
+                Setting::BuiltinCrew(v) => c.custom.builtin_characters = v,
+                Setting::ContentOn(name, on) => {
+                    c.custom.off.retain(|n| n != &name);
+                    if !on {
+                        c.custom.off.push(name);
+                    }
+                    // a prop's look changes at once; offices repaint their walls and floor
+                    restyle = true;
+                }
+                Setting::OpenContent => {
+                    save = false;
+                    if let Some(dir) = crate::custom::content().dir.clone() {
+                        for sub in ["characters", "props"] {
+                            let _ = std::fs::create_dir_all(dir.join(sub));
+                        }
+                        let readme = dir.join("CONTENT.txt");
+                        if !readme.exists() {
+                            let _ = std::fs::write(&readme, crate::custom::README);
+                        }
+                        open_folder(&dir);
+                    }
+                }
                 Setting::Backdrop(b) => c.appearance.backdrop = b,
                 Setting::AnimFps(v) => c.anim_fps = v,
                 Setting::ActiveMinutes(v) => c.active_minutes = v,
@@ -1150,6 +1429,7 @@ impl App {
                 let _ = c.save();
             }
             style::apply(&c.appearance);
+            crate::custom::set_pool(&c.custom);
         }
         if restyle {
             // offices repaint in the new style; their crews arrive again from the sessions
@@ -1162,6 +1442,20 @@ impl App {
     pub fn view_office(&self) -> iced::Element<'_, Message> {
         shader(OfficeShader { scene: &self.scene, cam: &self.cam }).width(iced::Fill).height(iced::Fill).into()
     }
+}
+
+/// How full a context is (0..1), where the user's compaction setting kicks in, and whether it is
+/// close to that point (or to the limit, with no setting).
+pub fn fullness(ctx: u64, window: u64, settings: &crate::harness::compaction::Settings) -> (f32, Option<f32>, bool) {
+    use crate::harness::compaction::Rule;
+    let share = (ctx as f32 / window.max(1) as f32).clamp(0.0, 1.0);
+    let mark = match settings.rule.as_ref().map(|c| &c.0) {
+        Some(Rule::Share(x)) => Some(*x),
+        Some(Rule::Tokens(n)) => Some((*n as f32 / window.max(1) as f32).min(1.0)),
+        _ => None,
+    };
+    let near = mark.map_or(share > 0.9, |m| share >= m - 0.05);
+    (share, mark, near)
 }
 
 /// The session numbers the whiteboard shows.
@@ -1207,6 +1501,10 @@ fn expand_home(p: &str) -> PathBuf {
 }
 
 static LOCAL_OFFSET: std::sync::OnceLock<time::UtcOffset> = std::sync::OnceLock::new();
+
+pub fn local_offset() -> time::UtcOffset {
+    LOCAL_OFFSET.get().copied().unwrap_or(time::UtcOffset::UTC)
+}
 
 fn local_now() -> time::OffsetDateTime {
     time::OffsetDateTime::now_utc().to_offset(LOCAL_OFFSET.get().copied().unwrap_or(time::UtcOffset::UTC))

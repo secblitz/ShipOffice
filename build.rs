@@ -11,13 +11,12 @@ fn main() {
     let meta: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&meta_path).expect("assets/meta.json")).expect("valid meta.json");
     let mut files = vec!["meta.json".to_owned()];
     for a in meta["anims"].as_object().expect("anims").values() {
-        for k in ["file", "mask"] {
-            if let Some(f) = a[k].as_str() {
-                files.push(f.to_owned());
-            }
+        if let Some(f) = a["file"].as_str() {
+            files.push(f.to_owned());
         }
     }
-    for k in ["props", "propsBack", "tiles", "cafe", "games", "deskEmpty"] {
+    files.push("desk_front.webp".to_owned());
+    for k in ["props", "propsBack", "tiles", "cafe", "games", "deskEmpty", "signals"] {
         if let Some(f) = meta[k]["file"].as_str() {
             files.push(f.to_owned());
         }

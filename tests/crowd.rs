@@ -28,13 +28,13 @@ fn run(n: usize, frames: usize) -> (World, f64, f64) {
     let dt = 1.0 / 60.0;
     // everyone walks in first; then the frames are timed
     for _ in 0..60 * 120 {
-        w.sync(&s);
+        w.sync(&s, SystemTime::now());
         w.step(dt);
     }
     let (mut sim, mut draw) = (0.0, 0.0);
     for _ in 0..frames {
         let t = Instant::now();
-        w.sync(&s);
+        w.sync(&s, SystemTime::now());
         w.step(dt);
         sim += t.elapsed().as_secs_f64();
         let t = Instant::now();

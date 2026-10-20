@@ -27,6 +27,10 @@ pub enum Icon {
     Bolt,
     Check,
     Chevron(bool),
+    Play,
+    Pause,
+    /// a clock face with an arrow running back round it: replay
+    Replay,
 }
 
 struct Draw {
@@ -157,6 +161,44 @@ impl canvas::Program<Message> for Draw {
                     line(&mut f, p(0.28, 0.6), p(0.5, 0.38));
                     line(&mut f, p(0.5, 0.38), p(0.72, 0.6));
                 }
+            }
+            Icon::Play => {
+                let tri = Path::new(|b| {
+                    b.move_to(p(0.34, 0.24));
+                    b.line_to(p(0.76, 0.5));
+                    b.line_to(p(0.34, 0.76));
+                    b.close();
+                });
+                f.fill(&tri, self.color);
+            }
+            Icon::Pause => {
+                for x in [0.33, 0.57] {
+                    f.fill(&Path::rounded_rectangle(p(x, 0.25), Size::new(0.11 * s, 0.5 * s), (0.03 * s).into()), self.color);
+                }
+            }
+            Icon::Replay => {
+                let (c, r) = (p(0.5, 0.52), s * 0.3);
+                let arc = Path::new(|b| {
+                    let n = 28;
+                    for i in 0..=n {
+                        let a = 1.9 + 4.9 * i as f32 / n as f32;
+                        let q = Point::new(c.x + r * a.cos(), c.y - r * a.sin());
+                        if i == 0 {
+                            b.move_to(q)
+                        } else {
+                            b.line_to(q)
+                        }
+                    }
+                });
+                f.stroke(&arc, stroke);
+                // the arrow head at the start, pointing back
+                let a = 1.9f32;
+                let tip = Point::new(c.x + r * a.cos(), c.y - r * a.sin());
+                line(&mut f, tip, Point::new(tip.x - 0.16 * s, tip.y + 0.02 * s));
+                line(&mut f, tip, Point::new(tip.x + 0.02 * s, tip.y + 0.15 * s));
+                // the hands
+                line(&mut f, c, p(0.5, 0.36));
+                line(&mut f, c, p(0.62, 0.6));
             }
             Icon::Shuffle => {
                 line(&mut f, p(0.2, 0.32), p(0.4, 0.32));

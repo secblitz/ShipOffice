@@ -27,6 +27,32 @@ pub struct Config {
     pub feed_open: bool,
     /// After a drag, ease the view to the nearest corner angle, where the art reads cleanly.
     pub snap_view: bool,
+    /// A desktop notification when an agent waits on you, while the window is in the background.
+    pub notify_needs: bool,
+    /// And when a session finishes its turn.
+    pub notify_done: bool,
+    /// Minutes of nothing before an agent that should be working counts as stuck.
+    pub stuck_minutes: u64,
+    /// Characters and props you added (see docs/custom.md).
+    pub custom: Custom,
+}
+
+/// What of your own content is in use.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Custom {
+    /// The built-in crew joins yours; off, only your characters work here.
+    pub builtin_characters: bool,
+    /// The character the lead is, by its folder name.
+    pub lead: Option<String>,
+    /// Characters and props you switched off, by folder or file name.
+    pub off: Vec<String>,
+}
+
+impl Default for Custom {
+    fn default() -> Self {
+        Self { builtin_characters: true, lead: None, off: Vec::new() }
+    }
 }
 
 /// How the HUD looks: a preset, plus any colours you changed on top of it.
@@ -91,6 +117,10 @@ impl Default for Config {
             appearance: Appearance::default(),
             feed_open: false,
             snap_view: true,
+            notify_needs: true,
+            notify_done: false,
+            stuck_minutes: 8,
+            custom: Custom::default(),
         }
     }
 }

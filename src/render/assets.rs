@@ -1,10 +1,4 @@
 //! The sprite atlases baked into the binary, decoded on demand.
-//!
-//! Character sheets are split for the GPU so the outfit swap stays exact when the sheet is
-//! filtered and mipmapped: one texture holds the pixels that are never recoloured (premultiplied),
-//! the other holds, per recolourable region, how much of the region's colour a pixel shows. The
-//! shader adds `colour × weight` back, which is linear in the pixels, so blending texels first
-//! gives the same result as recolouring first.
 
 use image::RgbaImage;
 use serde_json::Value;
@@ -28,7 +22,6 @@ pub fn file(name: &str) -> Option<&'static [u8]> {
 #[derive(Debug, Clone)]
 pub struct Anim {
     pub file: String,
-    pub mask: Option<String>,
     pub fw: u32,
     pub fh: u32,
     pub frames: u32,
@@ -38,6 +31,8 @@ pub struct Anim {
     /// a ping pong stroke: where the paddle is at the hit (frame 0), in sheet px from the frame's
     /// bottom centre, x to the right and y up
     pub paddle: Option<[f32; 2]>,
+    /// world px per sheet px, for a sheet of your own (the built-in ones know theirs)
+    pub scale: Option<f32>,
 }
 
 #[derive(Debug)]
@@ -65,38 +60,64 @@ pub fn meta() -> &'static Meta {
                 k.clone(),
                 Anim {
                     file: a["file"].as_str().unwrap_or_default().to_owned(),
-                    mask: a["mask"].as_str().map(str::to_owned),
                     fw: num(&a["fw"]),
                     fh: num(&a["fh"]),
                     frames: num(&a["frames"]).max(1),
                     cols: num(&a["cols"]).max(1),
                     fps: a["fps"].as_f64().map(|f| f as f32),
                     paddle: a["paddle"].as_array().and_then(|p| Some([p.first()?.as_f64()? as f32, p.get(1)?.as_f64()? as f32])),
+                    scale: None,
                 },
             );
         }
         let mut items = HashMap::new();
-        for (atlas, file) in [("props", "props.webp"), ("cafe", "cafe.webp"), ("propsBack", "props_back.webp"), ("games", "games.webp")] {
+        for (atlas, file) in [("props", "props.webp"), ("cafe", "cafe.webp"), ("propsBack", "props_back.webp"), ("games", "games.webp"), ("signals", "signals.webp")] {
             for (k, r) in v[atlas]["items"].as_object().into_iter().flatten() {
                 items.insert(k.clone(), (file, rect(r)));
             }
         }
         let tiles = v["tiles"]["items"].as_object().into_iter().flatten().map(|(k, r)| (k.clone(), rect(r))).collect();
         let desk_empty = (num(&v["deskEmpty"]["w"]), num(&v["deskEmpty"]["h"]));
-        let atlas_size = HashMap::from([
+        let mut atlas_size = HashMap::from([
             ("props.webp", (num(&v["props"]["w"]), num(&v["props"]["h"]))),
             ("cafe.webp", (num(&v["cafe"]["w"]), num(&v["cafe"]["h"]))),
             ("props_back.webp", (num(&v["propsBack"]["w"]), num(&v["propsBack"]["h"]))),
             ("games.webp", (num(&v["games"]["w"]), num(&v["games"]["h"]))),
+            ("signals.webp", (num(&v["signals"]["w"]), num(&v["signals"]["h"]))),
             ("desk_empty.webp", desk_empty),
+            ("desk_front.webp", desk_empty),
         ]);
+        // your own characters and props: a prop stands where the built-in one did, at its size
+        let c = crate::custom::content();
+        anims.extend(c.anims.iter().cloned());
+        for p in &c.props {
+            let Some(&(_, r)) = items.get(&p.item) else { continue };
+            let file: &'static str = Box::leak(format!("{}{}", crate::custom::PREFIX, p.file.display()).into_boxed_str());
+            items.insert(format!("custom/{}", p.item), (file, [0, 0, r[2], r[3]]));
+            atlas_size.insert(file, (r[2], r[3]));
+        }
         let cards = &v["games"]["panels"];
         let score_cards = [rect(&cards[0]), rect(&cards[1])];
         Meta { anims, items, tiles, desk_empty, score_cards, atlas_size }
     })
 }
 
+/// A prop's art: your own when you switched it on, else the built-in one.
+pub fn item(name: &str) -> Option<&'static (&'static str, [u32; 4])> {
+    let m = meta();
+    if crate::custom::prop_on(name) {
+        if let Some(it) = m.items.get(&format!("custom/{name}")) {
+            return Some(it);
+        }
+    }
+    m.items.get(name)
+}
+
 pub fn decode(name: &str) -> Option<RgbaImage> {
+    if name.starts_with(crate::custom::PREFIX) {
+        let bytes = crate::custom::read(name)?;
+        return image::load_from_memory(&bytes).ok().map(|i| i.to_rgba8());
+    }
     let bytes = file(name)?;
     let fmt = if name.ends_with(".png") { image::ImageFormat::Png } else { image::ImageFormat::WebP };
     image::load_from_memory_with_format(bytes, fmt).ok().map(|i| i.to_rgba8())
@@ -109,59 +130,6 @@ pub fn premultiply(img: &mut RgbaImage) {
             p[c] = ((p[c] as u32 * a + 127) / 255) as u8;
         }
     }
-}
-
-/// Mask value / 40 -> weight channel (top, hair, pants, accent). Skin (4) is never recoloured.
-fn channel(region: u8) -> Option<usize> {
-    match region {
-        1 => Some(0),
-        2 => Some(1),
-        3 => Some(2),
-        5 => Some(3),
-        _ => None,
-    }
-}
-
-/// The largest shading factor a recoloured pixel may get relative to its region's average.
-pub const MAX_SHADE: f32 = 1.7;
-
-/// Splits a character sheet into the fixed pixels and the per-region weights described above.
-pub fn split_sheet(src: &RgbaImage, mask: &image::GrayImage) -> (RgbaImage, RgbaImage) {
-    let lum = |p: &image::Rgba<u8>| (0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32) / 255.0;
-    let region = |x: u32, y: u32| ((mask.get_pixel(x, y)[0] as f32 / 40.0).round()) as u8;
-    let (mut sum, mut cnt) = ([0f32; 6], [0u32; 6]);
-    for (x, y, p) in src.enumerate_pixels() {
-        let r = region(x, y) as usize;
-        if r == 0 || r > 5 || p[3] < 8 {
-            continue;
-        }
-        sum[r] += lum(p);
-        cnt[r] += 1;
-    }
-    let reference: Vec<f32> = (0..6).map(|i| if cnt[i] > 0 { (sum[i] / cnt[i] as f32).max(0.02) } else { 1.0 }).collect();
-    let mut fixed = src.clone();
-    let mut weights = RgbaImage::new(src.width(), src.height());
-    for (x, y, p) in src.enumerate_pixels() {
-        let r = region(x, y);
-        let a = p[3] as f32 / 255.0;
-        match channel(r) {
-            Some(c) if p[3] >= 8 => {
-                let f = (lum(p) / reference[r as usize]).min(MAX_SHADE) / MAX_SHADE;
-                weights.get_pixel_mut(x, y)[c] = (a * f * 255.0).round() as u8;
-                let q = fixed.get_pixel_mut(x, y);
-                q[0] = 0;
-                q[1] = 0;
-                q[2] = 0;
-            }
-            _ => {
-                let q = fixed.get_pixel_mut(x, y);
-                for k in 0..3 {
-                    q[k] = (q[k] as f32 * a).round() as u8;
-                }
-            }
-        }
-    }
-    (fixed, weights)
 }
 
 /// Box-filtered mip chain, level 0 first. Inputs are premultiplied, so plain averaging is right.
@@ -205,19 +173,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_sheet_is_embedded_and_splits() {
+    fn every_sheet_is_embedded() {
         let m = meta();
         assert!(m.anims.len() >= 50);
-        let a = &m.anims["walk_c3"];
-        let src = decode(&a.file).unwrap();
-        assert_eq!(src.width(), a.fw * a.cols);
-        let mask = image::load_from_memory(file(a.mask.as_ref().unwrap()).unwrap()).unwrap().to_luma8();
-        let (fixed, w) = split_sheet(&src, &mask);
-        // some pixels were moved into each of top, hair and pants
-        for c in 0..3 {
-            assert!(w.pixels().filter(|p| p[c] > 0).count() > 100, "channel {c}");
+        for a in m.anims.values() {
+            let src = decode(&a.file).unwrap_or_else(|| panic!("{} is embedded", a.file));
+            assert_eq!(src.width(), a.fw * a.cols, "{}", a.file);
         }
-        assert_eq!(fixed.dimensions(), src.dimensions());
         assert!(m.items.contains_key("pingpong") && m.items.contains_key("chairL"));
     }
 }

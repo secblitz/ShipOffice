@@ -68,6 +68,8 @@ pub enum EventKind {
     Compacted { pre_tokens: Option<u64>, auto: Option<bool> },
     /// The model's context window in tokens, when the log says so.
     ContextWindow(u64),
+    /// The helper is one of a team started together, such as one phase of a workflow.
+    Team { name: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]

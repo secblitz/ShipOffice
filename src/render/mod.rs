@@ -1,5 +1,5 @@
 //! Drawing the office: a CPU-painted static layer (floor and walls), then every sprite in one
-//! instanced GPU pass that also does the outfit recolour, then a canvas overlay for text.
+//! instanced GPU pass, then a canvas overlay for text.
 
 pub mod assets;
 pub mod gpu;
@@ -25,18 +25,16 @@ pub struct Instance {
     pub uv: [f32; 4],
     /// multiplies the result; alpha fades the whole quad
     pub tint: [u8; 4],
-    /// outfit colours: top, hair, pants, accent
-    pub cols: [[u8; 4]; 4],
 }
 
 impl Instance {
     /// An axis-aligned quad; `flip` mirrors it horizontally around its centre.
     pub fn rect(x: f32, y: f32, w: f32, h: f32, uv: [f32; 4], flip: bool) -> Self {
         let (m, t) = if flip { ([-w, 0.0, 0.0, h], [x + w, y]) } else { ([w, 0.0, 0.0, h], [x, y]) };
-        Self { m, t, glow: 0.0, _pad: 0.0, uv, tint: [255; 4], cols: [[0; 4]; 4] }
+        Self { m, t, glow: 0.0, _pad: 0.0, uv, tint: [255; 4] }
     }
     pub fn affine(m: [f32; 4], t: [f32; 2], uv: [f32; 4]) -> Self {
-        Self { m, t, glow: 0.0, _pad: 0.0, uv, tint: [255; 4], cols: [[0; 4]; 4] }
+        Self { m, t, glow: 0.0, _pad: 0.0, uv, tint: [255; 4] }
     }
     pub fn tint(mut self, rgba: [u8; 4]) -> Self {
         self.tint = rgba;
@@ -57,7 +55,14 @@ pub enum Fx {
     Glass,
     /// transparent at the top, opaque at the bottom: haze bands and fades
     Ramp,
+    /// the selection ring filled this many steps of ARC_STEPS round: how full a context is
+    Arc(u8),
+    /// a sheet of paper, for a desk being tidied
+    Paper,
 }
+
+/// How finely the context ring fills.
+pub const ARC_STEPS: u8 = 24;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TexKey {
@@ -103,8 +108,6 @@ pub struct Camera {
     /// how far the HUD pushes the room's centre up, in world px at fit
     shift: f32,
     pads: (f32, f32),
-    /// the furthest zoom in, for this room's size
-    pub max_z: f32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -128,17 +131,14 @@ impl Bounds {
     }
 }
 
-pub const MAX_ZOOM: f32 = 2.8;
-
-/// How far in the camera zooms on this room: further on a grown office, so a person can still be
-/// seen as close up as in a small one.
-pub fn max_zoom(o: &crate::office::gen::Layout) -> f32 {
-    MAX_ZOOM * ((o.w + o.h) as f32 / 30.0).max(1.0)
-}
+/// The most stage px one px of a character's sheet may cover at the furthest zoom in: any more
+/// and the sprite is stretched past what was drawn, and blurs. Stage px, not device px: on a
+/// HiDPI screen a sheet px over two device px looks as sharp as over one on a plain screen.
+const SHARP: f32 = 1.0;
 
 impl Camera {
     pub fn new() -> Self {
-        Self { z: 1.0, cx: 0.0, cy: 0.0, fit: 1.0, home: (0.0, 0.0), bounds: Bounds::default(), w: 1.0, h: 1.0, shift: 0.0, pads: (0.0, 0.0), max_z: MAX_ZOOM }
+        Self { z: 1.0, cx: 0.0, cy: 0.0, fit: 1.0, home: (0.0, 0.0), bounds: Bounds::default(), w: 1.0, h: 1.0, shift: 0.0, pads: (0.0, 0.0) }
     }
 
     /// Fits the office into the stage, leaving room for the HUD bars. `fresh` recentres.
@@ -154,6 +154,8 @@ impl Camera {
             self.z = 1.0;
             (self.cx, self.cy) = self.home;
         }
+        // a bigger window lowers the furthest zoom
+        self.z = self.z.min(self.max_z());
         self.clamp();
     }
 
@@ -184,6 +186,12 @@ impl Camera {
         self.fit * self.z
     }
 
+    /// The furthest zoom in: until a person is drawn at the size their sheet was made, however
+    /// big the room or the window.
+    pub fn max_z(&self) -> f32 {
+        (SHARP / (scene::VIDEO_SCALE * self.fit)).max(1.0)
+    }
+
     /// The office never slides off screen: at 1x it sits at home, zoomed in it pans to its edges.
     pub fn clamp(&mut self) {
         let s = self.scale();
@@ -211,7 +219,7 @@ impl Camera {
 
     pub fn zoom_at(&mut self, sx: f32, sy: f32, factor: f32) {
         let (wx, wy) = self.to_world(sx, sy);
-        self.z = (self.z * factor).clamp(1.0, self.max_z);
+        self.z = (self.z * factor).clamp(1.0, self.max_z());
         let s = self.scale();
         self.cx = wx - (sx - self.w / 2.0) / s;
         self.cy = wy - (sy - self.h / 2.0) / s;
@@ -229,5 +237,24 @@ impl Camera {
 impl Default for Camera {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_furthest_zoom_stays_sharp() {
+        let o = crate::office::gen::generate(3);
+        for (w, h) in [(1320.0, 840.0), (3840.0, 2160.0), (640.0, 400.0)] {
+            let mut c = Camera::new();
+            c.layout(Bounds::of(&o), w, h, 60.0, 60.0, true);
+            c.zoom_at(w / 2.0, h / 2.0, 100.0);
+            let px = scene::VIDEO_SCALE * c.scale();
+            assert!(px <= SHARP + 1e-4 || c.z == 1.0, "{w}x{h}: a sheet px covers {px} stage px");
+            // and a usual window still zooms in a good way
+            assert!(w > 2000.0 || c.z > 2.0, "{w}x{h}: only {}x", c.z);
+        }
     }
 }

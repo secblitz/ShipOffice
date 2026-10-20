@@ -6,17 +6,36 @@ use super::icon::{icon, icon_turned, Icon};
 use super::popover::Popover;
 use super::overlay::Overlay;
 use super::style::{self, alpha, on, p, rgb8, MONO, UI_BOLD, UI_MEDIUM};
-use super::{App, Card, HarnessChoice, Message, Page, Setting, Sharing, WindowAction};
+use super::{App, Card, CrewFilter, HarnessChoice, Message, Page, ReplayAction, Setting, Sharing, WindowAction};
 use crate::office::gen::THEMES;
 use crate::office::world::SeatRef;
 use crate::render::paint::{fmt_k, fmt_t};
 use crate::render::scene::Hit;
 use crate::session::{Session, Status};
-use iced::widget::{button, canvas, column, container, mouse_area, opaque, pin, row, scrollable, stack, text, text_input, toggler, tooltip, Space};
+use iced::widget::{button, canvas, column, container, mouse_area, opaque, pin, row, scrollable, slider, stack, text, text_input, toggler, tooltip, Space};
 use iced::{mouse, window, Alignment, Color, Element, Fill, Length, Padding};
 use std::time::SystemTime;
 
 type El<'a> = Element<'a, Message>;
+
+/// The crew list's search field, focused when the list opens.
+pub const CREW_SEARCH: &str = "crew-search";
+
+/// The raised hand from the signs atlas, for the HUD.
+fn hand(size: f32) -> El<'static> {
+    static HAND: std::sync::OnceLock<Option<iced::widget::image::Handle>> = std::sync::OnceLock::new();
+    let h = HAND.get_or_init(|| {
+        let m = crate::render::assets::meta();
+        let &(file, r) = m.items.get("hand")?;
+        let img = crate::render::assets::decode(file)?;
+        let c = image::imageops::crop_imm(&img, r[0], r[1], r[2], r[3]).to_image();
+        Some(iced::widget::image::Handle::from_rgba(c.width(), c.height(), c.into_raw()))
+    });
+    match h {
+        Some(h) => iced::widget::image(h.clone()).height(size).into(),
+        None => dot(p().waiting, size * 0.6),
+    }
+}
 
 // Advanced shaping everywhere: basic shaping drops glyphs of text that changes every frame
 fn t<'a>(s: impl text::IntoFragment<'a>, size: f32, color: Color) -> text::Text<'a> {
@@ -64,7 +83,7 @@ fn tip<'a>(s: &'a str) -> El<'a> {
 fn face<'a>(a: &crate::office::world::Avatar, d: f32) -> El<'a> {
     let c = rgb8(a.color());
     let ring = 2.0;
-    let inner: El = match super::portrait::portrait(a.char_id, &a.palette) {
+    let inner: El = match super::portrait::portrait(a.char_id) {
         Some(h) => iced::widget::image(h).width(d - 2.0 * ring).height(d - 2.0 * ring).border_radius((d - 2.0 * ring) / 2.0).into(),
         None => container(t(a.name.chars().next().unwrap_or('?').to_uppercase().to_string(), d * 0.4, on(c)).font(UI_BOLD)).center(d - 2.0 * ring).into(),
     };
@@ -160,7 +179,7 @@ impl App {
             ..Default::default()
         });
         let cfg = self.config();
-        let overlay = canvas(Overlay { scene: &self.scene, world: self.tab().map(|t| &t.world), cam: &self.cam, hover: self.hover, selected: self.selected, bubbles: cfg.bubbles, stage: self.stage, view: self.tab().map(|t| self.view_of(t)) }).width(Fill).height(Fill);
+        let overlay = canvas(Overlay { scene: &self.scene, world: self.shown(), cam: &self.cam, hover: self.hover, selected: self.selected, bubbles: cfg.bubbles, stage: self.stage, view: self.tab().map(|t| self.view_of(t)) }).width(Fill).height(Fill);
         let mut layers: Vec<El> = vec![bg.into()];
         if self.tab().is_some() {
             layers.push(self.view_office());
@@ -171,6 +190,7 @@ impl App {
             return stack(layers).width(Fill).height(Fill).into();
         }
         layers.push(self.hud(cfg.feed_open));
+        layers.extend(self.minimap());
         layers.extend(self.inspector());
         layers.extend(self.board_card());
         if self.tabs.is_empty() {
@@ -205,6 +225,9 @@ impl App {
             if self.crew_open {
                 let e = self.enter("crew");
                 bottom = bottom.push(opaque(style::faded(e, || container(self.crew_list()).padding(Padding { top: (1.0 - e) * 10.0, ..Padding::ZERO }))));
+            }
+            if let Some(bar) = self.replay_bar() {
+                bottom = bottom.push(opaque(bar));
             }
             bottom = bottom.push(opaque(self.toolbar(feed_open)));
             col = col.push(bottom);
@@ -279,13 +302,23 @@ impl App {
     fn toolbar(&self, feed_open: bool) -> El<'_> {
         let pal = p();
         let zoom = mono(format!("{:.0}%", self.cam.z * 100.0), 11.5, pal.muted).width(44).align_x(Alignment::Center);
-        let crew: Vec<El> = self.tab().map(|t| t.world.avatars.iter().take(6).map(|a| dot(rgb8(a.color()), 9.0)).collect()).unwrap_or_default();
-        let n = self.tab().map_or(0, |t| t.world.avatars.len());
+        let crew: Vec<El> = self.shown().map(|w| w.avatars.iter().take(6).map(|a| dot(rgb8(a.color()), 9.0)).collect()).unwrap_or_default();
+        let n = self.shown().map_or(0, |w| w.avatars.len());
         let crew_btn = button(row![row(crew).spacing(3), t(format!("{n} crew"), 12.0, if self.crew_open { pal.text } else { pal.muted }).font(UI_MEDIUM)].spacing(8).align_y(Alignment::Center))
             .padding([8, 11])
             .height(32)
             .style(style::flat(self.crew_open))
             .on_press(Message::ToggleCrew);
+        // whoever waits on you, one click away
+        let needing = self.shown().map_or(0, |w| w.avatars.iter().filter(|a| a.needs.is_some()).count());
+        let crew_btn: El = if needing > 0 {
+            let pulse = 0.75 + 0.25 * (self.started_secs() * 4.0).sin();
+            let label = if needing == 1 { "1 needs you".to_owned() } else { format!("{needing} need you") };
+            let b = button(row![hand(15.0), t(label, 12.0, pal.waiting).font(UI_BOLD)].spacing(6).align_y(Alignment::Center)).padding([7, 10]).height(32).style(style::tinted_button(alpha(pal.waiting, pulse))).on_press(Message::NextNeeding);
+            row![crew_btn, tooltip(b, tip("Go to the next one waiting on you"), tooltip::Position::Top).gap(8)].spacing(2).align_y(Alignment::Center).into()
+        } else {
+            crew_btn.into()
+        };
         let r = row![
             tool(Icon::Minus, "Zoom out  −", Message::Zoom(0.8), false),
             zoom,
@@ -305,6 +338,7 @@ impl App {
             r,
             sep(),
             tool(Icon::Feed, "Live feed", Message::ToggleFeed, feed_open),
+            tool(Icon::Replay, "Replay the last hour", Message::Replay(if self.replay.is_some() { ReplayAction::Live } else { ReplayAction::Start }), self.replay.is_some()),
             tooltip(button(container(self.dice(16.0)).center(Fill)).width(32).height(32).padding(0).style(style::flat(false)).on_press(Message::NewLayout), tip("New office for this session  N"), tooltip::Position::Top).gap(8),
             sep(),
             tooltip(
@@ -340,21 +374,94 @@ impl App {
 
     fn crew_list(&self) -> El<'_> {
         let pal = p();
-        let Some(tab) = self.tab() else { return Space::new().into() };
-        let rows = column(tab.world.avatars.iter().map(|a| -> El {
+        let Some(world) = self.shown() else { return Space::new().into() };
+        let crew = &world.avatars;
+        let q = self.crew_query.trim().to_lowercase();
+        let found = |a: &&crate::office::world::Avatar| q.is_empty() || a.name.to_lowercase().contains(&q) || a.label.to_lowercase().contains(&q) || a.role.as_ref().is_some_and(|r| r.to_lowercase().contains(&q)) || a.team.as_ref().is_some_and(|r| r.to_lowercase().contains(&q));
+        let search = text_input("Find someone by name, task or team", &self.crew_query).id(CREW_SEARCH).on_input(Message::CrewQuery).size(12.5).padding([7, 10]).style(style::input);
+        // a chip for each group that has anyone in it
+        let chips = [(CrewFilter::All, "All"), (CrewFilter::NeedsYou, "Needs you"), (CrewFilter::Stuck, "Stuck"), (CrewFilter::Errors, "Errors"), (CrewFilter::NearFull, "Near full")]
+            .into_iter()
+            .filter_map(|(f, name)| {
+                let n = crew.iter().filter(|a| f.keeps(a)).count();
+                (f == CrewFilter::All || n > 0 || self.crew_filter == f).then(|| -> El {
+                    let on_ = self.crew_filter == f;
+                    let c = if on_ { pal.text } else { pal.muted };
+                    button(row![t(name, 11.5, c).font(UI_MEDIUM), mono(n.to_string(), 10.5, c)].spacing(5).align_y(Alignment::Center)).padding([4, 9]).style(style::flat(on_)).on_press(Message::CrewFilter(f)).into()
+                })
+            });
+        let shown: Vec<&crate::office::world::Avatar> = crew.iter().filter(|a| self.crew_filter.keeps(a)).filter(found).collect();
+        let n = shown.len();
+        let rows = column(shown.into_iter().take(200).map(|a| -> El {
             let sel = self.selected == Some(a.id);
-            let body = row![face(a, 24.0), t(clip(&a.name, 30), 12.5, pal.text).font(UI_MEDIUM).width(Fill), t(clip(&a.label, 30), 11.5, badge_color(&a.label))].spacing(10).align_y(Alignment::Center);
-            button(body).padding([7, 10]).width(Fill).style(style::flat(sel)).on_press(Message::Select(if sel { None } else { Some(a.id) })).into()
+            // what is wrong, if anything, before what it is doing
+            let mark: El = if a.needs.is_some() {
+                hand(14.0)
+            } else if a.stuck {
+                mono("zz", 11.0, pal.muted).into()
+            } else if a.errors > 0 {
+                mono(format!("{}×", a.errors), 10.5, pal.danger).into()
+            } else {
+                Space::new().width(14).into()
+            };
+            let ctx = mono(format!("{:.0}%", a.gauge * 100.0), 10.5, if a.gauge_near { pal.danger } else { pal.muted }).width(34).align_x(Alignment::End);
+            let what = a.needs.as_deref().map_or_else(|| a.label.clone(), |q| format!("Asks: {q}"));
+            let body = row![face(a, 24.0), t(clip(&a.name, 28), 12.5, pal.text).font(UI_MEDIUM).width(Fill), mark, t(clip(&what, 30), 11.5, if a.needs.is_some() { pal.waiting } else { badge_color(&a.label) }), ctx].spacing(9).align_y(Alignment::Center);
+            button(body).padding([6, 10]).width(Fill).style(style::flat(sel)).on_press(Message::Jump(a.id)).into()
         }))
         .spacing(1);
-        container(scrollable(rows).height(Length::Shrink).style(style::thin_scroll)).padding(6).width(440).max_height(300).style(style::surface(14.0)).into()
+        let mut col = column![search, row(chips).spacing(2)].spacing(6);
+        if n == 0 {
+            col = col.push(container(t("Nobody matches.", 12.0, pal.muted)).padding([8, 10]));
+        } else {
+            col = col.push(scrollable(rows).height(Length::Shrink).style(style::thin_scroll));
+        }
+        if n > 200 {
+            col = col.push(t(format!("And {} more: narrow the search to see them.", n - 200), 11.0, pal.muted));
+        }
+        container(col).padding(8).width(480).max_height(360).style(style::surface(14.0)).into()
+    }
+
+    /// While a replay plays: back to live, play or pause, the scrubber, the time it shows and
+    /// the speed.
+    fn replay_bar(&self) -> Option<El<'_>> {
+        let r = self.replay.as_ref()?;
+        let pal = p();
+        let e = self.enter("replay");
+        let clock = |t: std::time::SystemTime| {
+            let d = time::OffsetDateTime::from(t).to_offset(super::local_offset());
+            format!("{:02}:{:02}:{:02}", d.hour(), d.minute(), d.second())
+        };
+        let live = button(row![dot(pal.danger, 7.0), t("Live", 12.0, pal.text).font(UI_MEDIUM)].spacing(6).align_y(Alignment::Center)).padding([6, 10]).height(30).style(style::secondary()).on_press(Message::Replay(ReplayAction::Live));
+        let play = tool(if r.playing { Icon::Pause } else { Icon::Play }, if r.playing { "Pause" } else { "Play" }, Message::Replay(ReplayAction::PlayPause), false);
+        let scrub = slider(0.0..=r.length(), r.offset(), |v| Message::Replay(ReplayAction::Seek(v))).step(1.0).width(Fill).style(style::scrubber);
+        let speeds = row(super::replay::SPEEDS.iter().map(|&v| -> El {
+            let on_ = (r.speed - v).abs() < 0.01;
+            button(mono(format!("{v:.0}×"), 11.0, if on_ { pal.text } else { pal.muted })).padding([4, 7]).style(style::flat(on_)).on_press(Message::Replay(ReplayAction::Speed(v))).into()
+        }))
+        .spacing(1);
+        let when = column![mono(clock(r.at), 12.0, pal.text), mono(format!("of {}", clock(r.to)), 10.0, pal.muted)].spacing(0).width(70);
+        let row_ = row![live, play, mono(clock(r.from), 10.5, pal.muted), scrub, when, speeds].spacing(10).align_y(Alignment::Center);
+        Some(style::faded(e, || container(row_).padding([6, 10]).width(720).style(style::surface(14.0))).into())
+    }
+
+    /// The minimap, on floors too big to take in at a glance.
+    fn minimap(&self) -> Option<El<'_>> {
+        let tab = self.tab()?;
+        let w = self.shown()?;
+        if w.avatars.len() <= 24 && w.s.layout.desks.len() <= 40 {
+            return None;
+        }
+        let map = canvas(super::minimap::MiniMap { world: w, view: self.view_of(tab), cam: &self.cam, now: self.started_secs() }).width(super::minimap::W).height(super::minimap::H);
+        let card = opaque(container(map).padding(4).style(style::surface(12.0)));
+        Some(container(card).align_right(Fill).align_bottom(Fill).padding(Padding { right: 12.0, bottom: 12.0, ..Padding::ZERO }).into())
     }
 
     fn agent_color(&self, who: &str) -> Color {
         if who == "You" {
             return p().text;
         }
-        self.tab().and_then(|t| t.world.avatars.iter().find(|a| a.name == who)).map_or(p().muted, |a| rgb8(a.color()))
+        self.shown().and_then(|w| w.avatars.iter().find(|a| a.name == who)).map_or(p().muted, |a| rgb8(a.color()))
     }
 
     fn feed(&self) -> El<'_> {
@@ -404,9 +511,9 @@ impl App {
     fn inspector_card(&self, e: f32) -> Option<El<'_>> {
         let pal = p();
         let id = self.selected?;
-        let tab = self.tab()?;
-        let a = tab.world.avatar(id)?;
-        let s = self.sessions.get(&tab.key)?;
+        self.tab()?;
+        let a = self.shown()?.avatar(id)?;
+        let s = self.session()?;
         let st = s.agents.get(&a.agent);
         let h = self.scene.heads.iter().find(|h| h.id == id)?;
         let (sx, sy) = self.cam.to_screen(h.x, (h.top + h.bottom) / 2.0);
@@ -459,19 +566,13 @@ impl App {
         let pal = p();
         use crate::session::WindowFrom;
         let who = st.map_or(crate::model::AgentRef::Lead, |st| st.id.clone());
-        let known = matches!(s.key.harness, "claude-code" | "codex" | "gemini-cli" | "qwen-code" | "goose");
+        let known = crate::harness::compaction::knows(s.key.harness);
         let settings = if known { self.settings_of(s, &who) } else { Default::default() };
         let (window, from) = s.window(&who, &settings);
         let window = window.max(1);
         let (ctx, times, last) = st.map_or((0, 0, None), |st| (st.context, st.compactions, st.compacted_at));
-        let share = (ctx as f32 / window as f32).clamp(0.0, 1.0);
         let setting = settings.rule.as_ref();
-        let mark = match setting.map(|c| &c.0) {
-            Some(Rule::Share(x)) => Some(*x),
-            Some(Rule::Tokens(n)) => Some((*n as f32 / window as f32).min(1.0)),
-            _ => None,
-        };
-        let near = mark.map_or(share > 0.9, |m| share >= m - 0.05);
+        let (share, mark, near) = super::fullness(ctx, window, &settings);
         let fill = ((share * 1000.0) as u16).clamp(1, 1000);
         let level = row![container(Space::new()).width(Length::FillPortion(fill)).height(6).style(style::fill(if near { pal.danger } else { pal.accent }, 3.0)), Space::new().width(Length::FillPortion((1000 - fill).max(1)))];
         let mut bar = stack![container(Space::new()).width(Fill).height(6).style(style::fill(pal.faint, 3.0)), level];
@@ -528,7 +629,7 @@ impl App {
     fn board_card_inner(&self, e: f32) -> Option<El<'_>> {
         let pal = p();
         let tab = self.tab()?;
-        let s = self.sessions.get(&tab.key)?;
+        let s = self.session()?;
         let o = &tab.world.s.layout;
         let (wx, wy) = self.view_of(tab).project((o.bx0 + o.bx1) as f32 / 2.0, 0.0, crate::render::view::wall_height() * 0.6);
         let (sx, sy) = self.cam.to_screen(wx, wy);
@@ -543,7 +644,7 @@ impl App {
             ("Cache hits", format!("{}%", (cache * 100.0).round())),
             ("Tool calls", tools.to_string()),
             ("Files touched", s.files_touched.to_string()),
-            ("Crew", tab.world.avatars.len().to_string()),
+            ("Crew", self.shown().map_or(0, |w| w.avatars.len()).to_string()),
         ];
         let grid = column(cells.chunks(2).map(|pair| -> El { row(pair.iter().map(|(k, v)| -> El { column![t(*k, 11.0, pal.muted), mono(v.clone(), 14.0, pal.text)].spacing(2).width(Fill).into() })).spacing(12).into() })).spacing(10);
         let sub = [Some(s.harness_name.clone()), s.branch.clone().filter(|b| b != "HEAD"), s.model.clone()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
@@ -757,6 +858,7 @@ impl App {
         };
         let fps = self.dropdown("fps", label(format!("{} fps", cfg.anim_fps)), [12u32, 16, 24].into_iter().map(|v| (plain(fps_name(v)), Message::Setting(Setting::AnimFps(v)), v == cfg.anim_fps)).collect(), 110.0);
 
+        let stuck = self.dropdown("stuck", label(mins(cfg.stuck_minutes)), [3u64, 5, 8, 15, 30].into_iter().map(|m| (plain(mins(m)), Message::Setting(Setting::StuckMinutes(m)), m == cfg.stuck_minutes)).collect(), 110.0);
         let keys = [("Drag", "Pan"), ("Right-drag", "Turn and tilt"), ("Scroll", "Zoom"), ("Q  E", "Turn a quarter"), ("R", "Classic angle"), ("N", "New office"), ("F", "Follow"), ("Tab", "Next agent"), ("1–9", "Switch tab"), ("Esc", "Close")];
         let key_rows = keys.iter().map(|(k, v)| -> El { row![t(*v, 12.0, pal.muted).width(Fill), container(mono(*k, 11.0, pal.text)).padding([2, 7]).style(style::inset())].align_y(Alignment::Center).padding([5, 12]).into() }).collect();
         let path = crate::config::Config::path().map(|p| tidy_path(&p)).unwrap_or_default();
@@ -767,12 +869,61 @@ impl App {
                 item("Demo crew", Some("Pretend agents when nothing is live"), switch(cfg.demo_when_empty, Setting::Demo)),
             ]),
             group("Sessions", vec![item("Active within", None, window), item("Most tabs", None, tabs)]),
+            group("Signals", vec![
+                item("Notify when an agent needs you", Some("While ShipOffice is in the background"), switch(cfg.notify_needs, Setting::NotifyNeeds)),
+                item("Notify when a session finishes", None, switch(cfg.notify_done, Setting::NotifyDone)),
+                item("Stuck after", Some("Doing nothing while it should be working"), stuck),
+            ]),
             group("Performance", vec![item("Animation", None, fps), item("Show frame rate", None, switch(cfg.show_fps, Setting::ShowFps))]),
+            self.content_group(cfg),
             group_raw("Controls", key_rows),
             group_raw("Config file", vec![row![mono(clip(&path, 34), 11.0, pal.muted).width(Fill), button(t("Open folder", 12.0, pal.text).font(UI_MEDIUM)).padding([5, 12]).style(style::secondary()).on_press(Message::Setting(Setting::OpenConfigFolder))].align_y(Alignment::Center).padding([8, 12]).into()]),
         ]
         .spacing(18)
         .into()
+    }
+}
+
+impl App {
+    /// Your own characters and props: each with a switch, what could not be read, and the
+    /// folder they come from.
+    fn content_group(&self, cfg: &crate::config::Config) -> El<'static> {
+        let pal = p();
+        let c = crate::custom::content();
+        let on_ = |name: &str| !cfg.custom.off.iter().any(|n| n == name);
+        let mut rows: Vec<El<'static>> = Vec::new();
+        let mut row_for = |label: String, hint: String, key: String, v: bool| {
+            let mut l = column![t(label, 12.5, pal.text)].spacing(2).width(Fill);
+            if !hint.is_empty() {
+                l = l.push(t(hint, 11.0, pal.muted));
+            }
+            let k = key.clone();
+            rows.push(row![l, toggler(v).on_toggle(move |x| Message::Setting(Setting::ContentOn(k.clone(), x))).size(18).style(style::toggle)].spacing(12).align_y(Alignment::Center).padding([8, 12]).into());
+        };
+        for ch in &c.characters {
+            let hint = match ch.replaces {
+                Some(i) => format!("New animations for {}", crate::custom::NAMES[i as usize]),
+                None if ch.extras.is_empty() => "Character".to_owned(),
+                None => format!("Character · {} extra animation{}", ch.extras.len(), if ch.extras.len() == 1 { "" } else { "s" }),
+            };
+            row_for(ch.name.clone(), hint, ch.folder.clone(), on_(&ch.folder));
+        }
+        for pr in &c.props {
+            row_for(pr.item.clone(), "Prop".into(), format!("props/{}", pr.item), on_(&format!("props/{}", pr.item)));
+        }
+        if c.characters.iter().any(|ch| ch.replaces.is_none()) {
+            let v = cfg.custom.builtin_characters;
+            rows.insert(0, row![column![t("Built-in crew", 12.5, pal.text), t("Off: only your characters work here", 11.0, pal.muted)].spacing(2).width(Fill), toggler(v).on_toggle(|x| Message::Setting(Setting::BuiltinCrew(x))).size(18).style(style::toggle)].spacing(12).align_y(Alignment::Center).padding([8, 12]).into());
+        }
+        if rows.is_empty() {
+            rows.push(container(t("Characters and props of your own go in the content folder. They are read when ShipOffice starts.", 11.5, pal.muted)).padding([8, 12]).into());
+        }
+        for e in &c.errors {
+            rows.push(row![dot(pal.danger, 6.0), t(e.clone(), 11.0, pal.danger)].spacing(8).align_y(Alignment::Center).padding([6, 12]).into());
+        }
+        let path = c.dir.as_ref().map(|d| tidy_path(d)).unwrap_or_default();
+        rows.push(row![mono(clip(&path, 34), 11.0, pal.muted).width(Fill), button(t("Open content folder", 12.0, pal.text).font(UI_MEDIUM)).padding([5, 12]).style(style::secondary()).on_press(Message::Setting(Setting::OpenContent))].align_y(Alignment::Center).padding([8, 12]).into());
+        group_raw("Your content", rows)
     }
 }
 

@@ -1,0 +1,22 @@
+# An example character: copy this folder into characters/ in your content folder
+# (Settings > Office > Open content folder) and restart ShipOffice.
+name = "Robot"
+# px from the soles to the top of the head in these pictures: sets its size beside the crew
+height = 240
+
+# one still picture: what it does when nothing below covers it
+image = "robot.png"
+
+# walking: six frames in one row, bobbing along
+[anims.walk]
+file = "walk.png"
+frames = 6
+fps = 10
+
+# an extra of its own: a little dance when its work is done
+[anims.dance]
+file = "dance.png"
+frames = 8
+cols = 4
+fps = 10
+when = "finish"

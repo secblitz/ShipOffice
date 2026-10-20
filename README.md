@@ -48,10 +48,16 @@ Each one is read from the session files it already writes; [docs/harnesses.md](d
 ## Features
 
 - **An office per session.** Every project gets its own procedural floor plan, with desks, a lounge, a coffee bar, ping pong and a whiteboard of live stats. Don't like it? Roll a new one from the dice on its tab.
-- **A crew that behaves like your agents.** Subagents arrive, work and leave. Idle agents grab a coffee, play ping pong or sit on the couch. Every agent has its own face and outfit.
+- **A crew that behaves like your agents.** Subagents arrive, work and leave. Idle agents grab a coffee, play ping pong or sit on the couch. Seven characters take turns, each in the clothes it was drawn in, and every agent stands on a ring of its own colour.
+- **It tells you when it needs you.** An agent waiting on a permission prompt or your answer raises its hand and says what it is asking, the crew bar counts who is waiting (one click goes to the next), and a desktop notification reaches you while ShipOffice is in the background.
+- **Trouble shows at a glance.** An agent that should be working but has done nothing for a while slumps at its desk with z's over its head, and a failed tool call puffs red. Tool bubbles grow as you zoom, are cut between words, never pile up on each other, and in a big crew only the ones that matter show: whoever waits on you, just failed, leads, or is under your pointer.
+- **Teams sit together.** Helpers started together, such as one phase of a workflow, take neighbouring desks and meet at the whiteboard when their phase is done, so a crowd of hundreds reads as teams.
+- **Find anyone.** The crew list searches by name, task or team, filters to who needs you, who is stuck, who failed and who is near compaction, and takes you to whoever you pick. Big floors get a minimap you can click to look around.
+- **Replay the last hour.** Play back what a session did, up to 64 times as fast, and scrub to any moment to see what each helper was up to.
+- **Bring your own crew.** Add your own characters with their own animations, give the built-in crew new ones, or swap any prop for your own art, each with a switch in settings. See [docs/custom.md](docs/custom.md).
 - **Look from anywhere.** Pan, turn, tilt and zoom freely. The room is real geometry and the furniture faces the right way from every side, so it holds up at any angle.
 - **A floor of a skyscraper.** Your office sits high above New York by day or by night, with the skyline, the floors below yours, and traffic in the streets.
-- **Know what each agent knows.** Click anyone to see their tokens, tool calls and how full their context is, against the window it really has: the one the harness logs, the one you set (Claude Code's `autoCompactWindow`, per model or for all), or the model's own, never less than what it has already carried. The gauge marks the compaction point you set and counts every compaction, read from the log or, for harnesses that don't write them down, from the context suddenly shrinking.
+- **Know what each agent knows.** The ring under each agent fills as its context fills, turning red near compaction, and when its context is compacted it tidies its desk. Click anyone to see their tokens, tool calls and how full their context is, against the window it really has: the one the harness logs, the one you set (Claude Code's `autoCompactWindow`, per model or for all), or the model's own, never less than what it has already carried. The gauge marks the compaction point you set and counts every compaction, read from the log or, for harnesses that don't write them down, from the context suddenly shrinking.
 - **Room for a crowd.** Run a few agents or a few hundred: the office grows with the crew, adding rows of desks and a longer lounge, up to 512 desks, and the camera zooms in further on a big floor. Newcomers stream in faster when many arrive at once.
 - **Every session at a glance.** Tabs for your live sessions, cost and timing on the whiteboard, and a live feed of everything that happens.
 - **Show how locked in you are.** The ⚡ Locked in button turns what your agents are doing right now into a card for your feed: a score out of 100, the office itself, the crew's faces, tool calls, tokens and how long you have been at it. Save it as a PNG and copy a caption to post with it.
@@ -108,6 +114,7 @@ Run `shipoffice` and start an agent anywhere. With nothing running yet, a demo c
 | Click someone | Inspect them |
 | F | Follow the selected agent |
 | Tab | Next agent |
+| Esc | Back to live from a replay |
 | 1 to 9 | Switch tabs |
 
 Settings are saved to a TOML file you can also edit by hand: `~/.config/shipoffice/config.toml` on Linux, `~/Library/Application Support/dev.shipoffice.ShipOffice/config.toml` on macOS and `%APPDATA%\shipoffice\ShipOffice\config\config.toml` on Windows. Set `SHIPOFFICE_CONFIG` to use another file.

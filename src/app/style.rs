@@ -248,6 +248,14 @@ pub fn tinted(c: Color) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style { background: Some(Background::Color(alpha(c, 0.16))), border: border::rounded(999), text_color: Some(c), ..Default::default() }
 }
 
+/// A button tinted in one colour, a little stronger while hovered.
+pub fn tinted_button(c: Color) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, status| {
+        let k = if hot(status) { 0.28 } else { 0.18 };
+        button::Style { background: Some(Background::Color(alpha(c, k * c.a))), text_color: Color { a: 1.0, ..c }, border: border::rounded(9), ..Default::default() }
+    }
+}
+
 fn hot(status: button::Status) -> bool {
     matches!(status, button::Status::Hovered | button::Status::Pressed)
 }
@@ -362,6 +370,21 @@ pub fn thin_scroll(_: &Theme, status: scrollable::Status) -> scrollable::Style {
         horizontal_rail: rail,
         gap: None,
         auto_scroll: scrollable::AutoScroll { background: Background::Color(p.surface), border: Border::default(), shadow: Shadow::default(), icon: p.text },
+    }
+}
+
+/// The replay scrubber: played part in the accent, a round handle that grows while held.
+pub fn scrubber(_: &Theme, status: iced::widget::slider::Status) -> iced::widget::slider::Style {
+    use iced::widget::slider;
+    let p = CURRENT.read().map(|p| *p).unwrap_or(PRESETS[0].pal);
+    let r = match status {
+        slider::Status::Dragged => 8.0,
+        slider::Status::Hovered => 7.0,
+        slider::Status::Active => 6.0,
+    };
+    slider::Style {
+        rail: slider::Rail { backgrounds: (Background::Color(p.accent), Background::Color(alpha(p.text, 0.14))), width: 4.0, border: border::rounded(2) },
+        handle: slider::Handle { shape: slider::HandleShape::Circle { radius: r }, background: Background::Color(p.text), border_width: 2.0, border_color: p.accent },
     }
 }
 

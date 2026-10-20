@@ -4,6 +4,10 @@
 use std::time::{Duration, Instant};
 
 fn main() -> iced::Result {
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("shipoffice {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if std::env::args().any(|a| a == "--list") {
         list();
         return Ok(());
