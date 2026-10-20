@@ -434,7 +434,7 @@ impl App {
         };
         let live = button(row![dot(pal.danger, 7.0), t("Live", 12.0, pal.text).font(UI_MEDIUM)].spacing(6).align_y(Alignment::Center)).padding([6, 10]).height(30).style(style::secondary()).on_press(Message::Replay(ReplayAction::Live));
         let play = tool(if r.playing { Icon::Pause } else { Icon::Play }, if r.playing { "Pause" } else { "Play" }, Message::Replay(ReplayAction::PlayPause), false);
-        let scrub = slider(0.0..=r.length(), r.offset(), |v| Message::Replay(ReplayAction::Seek(v))).step(1.0).width(Fill).style(style::scrubber);
+        let scrub = slider(0.0..=r.length(), r.offset(), |v| Message::Replay(ReplayAction::Seek(v))).step(1.0_f32).width(Fill).style(style::scrubber);
         let speeds = row(super::replay::SPEEDS.iter().map(|&v| -> El {
             let on_ = (r.speed - v).abs() < 0.01;
             button(mono(format!("{v:.0}×"), 11.0, if on_ { pal.text } else { pal.muted })).padding([4, 7]).style(style::flat(on_)).on_press(Message::Replay(ReplayAction::Speed(v))).into()
