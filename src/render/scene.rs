@@ -86,7 +86,7 @@ fn dir8(v: &View, heading: f32) -> ([(usize, f32); 2], bool) {
 /// One sprite of an avatar: which sheet and frame, mirrored or not, its scale, its feet in world
 /// px, how opaque, and a vertical stretch for breathing.
 struct Part {
-    key: String,
+    key: &'static str,
     frame: u32,
     flip: bool,
     scale: f32,
@@ -105,8 +105,8 @@ fn parts(p: &Pose, char_id: u8, w: &World, v: &View, anim_fps: f32) -> Vec<Part>
     let (toward, right) = v.facing(p.face);
     let mirrored = v.mirrored();
     let old = |base: &'static str, flip: bool, fixed: Option<u32>| {
-        let key = sheet_key(base, char_id);
-        let an = m.anims.get(&key)?;
+        let (key, an) = m.anims.get_key_value(&sheet_key(base, char_id))?;
+        let key = key.as_str();
         let (s, lift0) = sheet_scale(base);
         let lift = match seat {
             Some(st) if st.kind != SeatKind::Desk => st.lift,
@@ -137,8 +137,9 @@ fn parts(p: &Pose, char_id: u8, w: &World, v: &View, anim_fps: f32) -> Vec<Part>
             if wgt <= 0.0 {
                 continue;
             }
-            let key = if base == "stand8" { sheet_key(base, char_id) } else { sheet_key(&format!("{base}_{}", DIRS[d]), char_id) };
-            let an = m.anims.get(&key)?;
+            let name = if base == "stand8" { sheet_key(base, char_id) } else { sheet_key(&format!("{base}_{}", DIRS[d]), char_id) };
+            let (key, an) = m.anims.get_key_value(&name)?;
+            let key = key.as_str();
             out.push(Part { key, frame: frame(an.frames, d) % an.frames, flip, scale: VIDEO_SCALE, cx, by: cy + 6.0, alpha: wgt, stretch });
         }
         // the stronger direction is drawn whole, the other over it as much as it shows
@@ -152,16 +153,16 @@ fn parts(p: &Pose, char_id: u8, w: &World, v: &View, anim_fps: f32) -> Vec<Part>
     let stand = |heading: f32| eight("stand8", heading, &|_, d| d as u32, breathe);
     // a sheet filmed once (front or back diagonal), looping at the rate it was filmed at
     let filmed = |base: &str, flip: bool, by: f32| {
-        let key = sheet_key(base, char_id);
-        let an = m.anims.get(&key)?;
+        let (key, an) = m.anims.get_key_value(&sheet_key(base, char_id))?;
+        let key = key.as_str();
         let frame = ((p.t + p.phase) * an.fps.unwrap_or(24.0)) as u32 % an.frames;
         Some(vec![Part { key, frame, flip, scale: VIDEO_SCALE, cx, by, alpha: 1.0, stretch: 1.0 }])
     };
     // a ping pong stroke starts at the hit, so it lines up with this player's turn in the rally
     // (`hit`, as a fraction of the period); between rallies they wait halfway back to ready
     let swing = |hit: f32| {
-        let key = sheet_key(if toward { "swing_front" } else { "swing_back" }, char_id);
-        let an = m.anims.get(&key)?;
+        let (key, an) = m.anims.get_key_value(&sheet_key(if toward { "swing_front" } else { "swing_back" }, char_id))?;
+        let key = key.as_str();
         let n = an.frames as f32;
         let frame = match w.s.game.as_ref().filter(|g| g.state == GameState::Playing) {
             Some(g) if g.swinging(w.s.elapsed) => ((w.s.elapsed - g.t0) / PP_PERIOD - hit).rem_euclid(1.0) * n,
@@ -208,7 +209,7 @@ fn parts(p: &Pose, char_id: u8, w: &World, v: &View, anim_fps: f32) -> Vec<Part>
 
 /// A part as a quad, recoloured with the avatar's outfit.
 fn part_quad(pt: &Part, a: &Avatar, alpha: f32, lift: f32) -> Option<(TexKey, Instance, f32, f32)> {
-    let an = meta().anims.get(&pt.key)?;
+    let an = meta().anims.get(pt.key)?;
     let i = pt.frame;
     let sheet_w = an.fw * an.cols;
     let rows = an.frames.div_ceil(an.cols);
@@ -221,7 +222,7 @@ fn part_quad(pt: &Part, a: &Avatar, alpha: f32, lift: f32) -> Option<(TexKey, In
             inst.cols[k] = [c[0], c[1], c[2], 255];
         }
     }
-    Some((TexKey::Sheet(pt.key.clone()), inst, dw, dh))
+    Some((TexKey::Sheet(pt.key), inst, dw, dh))
 }
 
 /// How high a ping pong player hops after scoring, and the winner keeps hopping.
@@ -425,7 +426,14 @@ pub fn build(inp: &Inputs) -> Scene {
     // everything that stands on the floor, sorted back to front
     let mut items: Vec<(f32, TexKey, Instance)> = Vec::new();
     let mut hits: Vec<(f32, Hit, [f32; 4])> = Vec::new();
-    let occupied: Vec<usize> = w.avatars.iter().filter_map(|a| if let Some(SeatRef::Desk(i)) = a.seated { Some(i) } else { None }).collect();
+    // an occupied desk is drawn by its sitter's sheet, which holds the desk too
+    let mut occupied = vec![false; o.desks.len()];
+    for a in &w.avatars {
+        if let Some(SeatRef::Desk(i)) = a.seated {
+            occupied[i] = true;
+        }
+    }
+    let desk_at: std::collections::HashMap<(i32, i32), usize> = o.desks.iter().enumerate().map(|(i, d)| ((d.x, d.y), i)).collect();
     let brewing = w.brewing();
     // the machines light up while someone plays them
     let lit: Vec<usize> = w
@@ -438,7 +446,7 @@ pub fn build(inp: &Inputs) -> Scene {
         })
         .collect();
     for (pi, p) in o.props.iter().enumerate() {
-        if p.atlas == Atlas::Desk && o.desks.iter().position(|d| d.x == p.x && d.y == p.y).is_some_and(|i| occupied.contains(&i)) {
+        if p.atlas == Atlas::Desk && desk_at.get(&(p.x, p.y)).is_some_and(|&i| occupied[i]) {
             continue;
         }
         let Some((key, mut inst, rect)) = prop_quad(p, v, o) else { continue };
@@ -528,7 +536,7 @@ pub fn build(inp: &Inputs) -> Scene {
             Some("ppback") => Some((cx + if main.flip { -14.0 } else { 14.0 }, by - 40.0)),
             // a filmed stroke knows where its paddle is at the hit; if it was not found, about there
             Some("swing_front" | "swing_back") => {
-                let [x, y] = meta().anims.get(&main.key).and_then(|an| an.paddle).unwrap_or([50.0, 90.0]);
+                let [x, y] = meta().anims.get(main.key).and_then(|an| an.paddle).unwrap_or([50.0, 90.0]);
                 Some((cx + if main.flip { -x } else { x } * main.scale, by - y * main.scale))
             }
             _ => None,
@@ -538,7 +546,7 @@ pub fn build(inp: &Inputs) -> Scene {
         let bw = match (desk, video) {
             (true, _) => 32.0,
             (false, true) => 24.0,
-            (false, false) => 0.6 * meta().anims.get(&main.key).map_or(40.0, |an| an.fw as f32 * main.scale),
+            (false, false) => 0.6 * meta().anims.get(main.key).map_or(40.0, |an| an.fw as f32 * main.scale),
         };
         hits.push((d + 0.01, Hit::Agent(a.id), [cx - bw / 2.0, top, bw, by - top]));
         games_fx(a, w, v, inp.now, cx, by, d, &mut items);
@@ -574,7 +582,9 @@ pub fn build(inp: &Inputs) -> Scene {
     sc.hits.extend(hits.into_iter().map(|(_, h, r)| (h, r)));
     sc.hits.extend(board);
 
-    ball(w, v, &sc.heads.clone(), &mut sc.list);
+    let heads = std::mem::take(&mut sc.heads);
+    ball(w, v, &heads, &mut sc.list);
+    sc.heads = heads;
     sc
 }
 

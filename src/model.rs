@@ -63,8 +63,9 @@ pub enum EventKind {
     TurnEnd,
     /// The harness asks the user something (a permission prompt, a plan approval...).
     NeedsInput { text: String },
-    /// The agent's context was compacted (summarised to make room); `pre_tokens` is how big it was.
-    Compacted { pre_tokens: Option<u64> },
+    /// The agent's context was compacted (summarised to make room); `pre_tokens` is how big it was,
+    /// `auto` whether the harness did it on its own as the window filled (not a manual /compact).
+    Compacted { pre_tokens: Option<u64>, auto: Option<bool> },
     /// The model's context window in tokens, when the log says so.
     ContextWindow(u64),
 }

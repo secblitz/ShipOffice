@@ -150,14 +150,25 @@ impl canvas::Program<Message> for Overlay<'_> {
         };
         // bubbles nearest the viewer keep their place; ones behind them rise until they clear
         let mut items: Vec<(f32, f32, &crate::office::world::Avatar, &crate::office::world::Bubble)> = Vec::new();
+        let by_id: std::collections::HashMap<u32, &crate::office::world::Avatar> = world.avatars.iter().map(|a| (a.id, a)).collect();
+        let on_screen = |sx: f32, sy: f32| sx > -200.0 && sx < bounds.width + 200.0 && sy > -40.0 && sy < bounds.height + 400.0;
         for h in &self.scene.heads {
-            let Some(a) = world.avatar(h.id).filter(|a| a.alpha > 0.3) else { continue };
+            let Some(a) = by_id.get(&h.id).copied().filter(|a| a.alpha > 0.3) else { continue };
             let (sx, sy) = self.cam.to_screen(h.x, h.y);
+            if !on_screen(sx, sy) {
+                continue;
+            }
             match a.bubble.as_ref().filter(|_| self.bubbles) {
                 Some(b) => items.push((sx, sy, a, b)),
                 None if Some(a.id) == tag || Some(a.id) == self.selected => name_tag(&mut f, &a.name, style::rgb8(a.color()), sx, sy, ub),
                 None => {}
             }
+        }
+        // a crowd says more than fits: the newest bubbles (and whoever is picked or pointed at)
+        if items.len() > MAX_BUBBLES {
+            let keep = |a: &crate::office::world::Avatar| Some(a.id) == tag || Some(a.id) == self.selected;
+            items.sort_by(|p, q| keep(q.2).cmp(&keep(p.2)).then((p.3.dur - p.3.left).total_cmp(&(q.3.dur - q.3.left))));
+            items.truncate(MAX_BUBBLES);
         }
         items.sort_by(|p, q| q.1.total_cmp(&p.1));
         let mut placed: Vec<Rectangle> = Vec::new();
@@ -197,6 +208,9 @@ impl canvas::Program<Message> for Overlay<'_> {
         vec![f.into_geometry()]
     }
 }
+
+/// The most speech bubbles shown at once.
+const MAX_BUBBLES: usize = 18;
 
 fn font(bytes: &'static [u8], cell: &'static OnceLock<fontdue::Font>) -> &'static fontdue::Font {
     cell.get_or_init(|| fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).expect("embedded font"))

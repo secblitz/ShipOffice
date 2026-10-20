@@ -193,7 +193,8 @@ impl Reader {
             }
             "system" if v.get("subtype").and_then(Value::as_str) == Some("compact_boundary") => {
                 let pre_tokens = v.pointer("/compactMetadata/preTokens").and_then(Value::as_u64);
-                out.push(self.ev(at, EventKind::Compacted { pre_tokens }));
+                let auto = v.pointer("/compactMetadata/trigger").and_then(Value::as_str).map(|t| t == "auto");
+                out.push(self.ev(at, EventKind::Compacted { pre_tokens, auto }));
             }
             "ai-title" | "custom-title" => {
                 let t = v.get("customTitle").or_else(|| v.get("aiTitle")).and_then(Value::as_str);

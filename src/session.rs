@@ -1,6 +1,7 @@
 //! Folds a stream of [`Event`]s into what the office shows: who is in the session, what each
 //! agent is doing right now, and the running totals for the HUD.
 
+use crate::harness::compaction::{Rule, Settings};
 use crate::model::{activity_for_tool, Activity, AgentRef, Event, EventKind, SessionKey, Usage};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
@@ -29,6 +30,12 @@ pub struct AgentState {
     pub tokens: u64,
     /// tokens the agent's last request carried: how full its own context is
     pub context: u64,
+    /// the most it has carried, which the window can be no smaller than
+    pub peak: u64,
+    /// the model this agent runs on, when its log says (helpers may run a different one)
+    pub model: Option<String>,
+    /// how big the context was when the harness last compacted it on its own
+    pub auto_at: Option<u64>,
     pub compactions: u32,
     pub compacted_at: Option<SystemTime>,
     pub done: bool,
@@ -48,6 +55,9 @@ impl AgentState {
             thought: None,
             tools_used: 0,
             context: 0,
+            peak: 0,
+            model: None,
+            auto_at: None,
             compactions: 0,
             compacted_at: None,
             tokens: 0,
@@ -88,9 +98,13 @@ pub struct Session {
     pub agents: BTreeMap<AgentRef, AgentState>,
     pub feed: VecDeque<FeedItem>,
     pub files_touched: u32,
+    /// the log has marked a compaction, so a drop in context is not taken for one
+    marked: bool,
 }
 
 const FEED_MAX: usize = 200;
+/// Finished helpers a session remembers.
+const KEEP_DONE: usize = 64;
 
 impl Session {
     pub fn new(key: SessionKey, harness_name: &str, at: SystemTime) -> Self {
@@ -115,6 +129,7 @@ impl Session {
             agents,
             feed: VecDeque::new(),
             files_touched: 0,
+            marked: false,
         }
     }
 
@@ -170,6 +185,9 @@ impl Session {
                 }
                 if model.is_some() && who == AgentRef::Lead {
                     self.model.clone_from(model);
+                }
+                if model.is_some() {
+                    self.agent(&who, at).model.clone_from(model);
                 }
                 if title.is_some() {
                     self.title.clone_from(title);
@@ -252,17 +270,33 @@ impl Session {
             }
             EventKind::Usage(u) => {
                 self.usage.add(u);
+                let now = u.total_in() + u.output;
                 if who == AgentRef::Lead {
-                    self.context = u.total_in() + u.output;
+                    self.context = now;
                 }
+                // a harness that never writes down its compactions still shows them: the context
+                // it sends falls to well under half in one step
+                let infer = !self.marked && !crate::harness::marks_compactions(self.key.harness);
                 let a = self.agent(&who, at);
+                if infer && a.context >= 20_000 && now * 2 < a.context {
+                    a.compactions += 1;
+                    a.compacted_at = Some(at);
+                }
                 a.tokens += u.input + u.output + u.cache_write;
-                a.context = u.total_in() + u.output;
+                a.context = now;
+                a.peak = a.peak.max(now);
             }
-            EventKind::Compacted { .. } => {
+            EventKind::Compacted { pre_tokens, auto } => {
+                self.marked = true;
                 let a = self.agent(&who, at);
                 a.compactions += 1;
                 a.compacted_at = Some(at);
+                if let Some(p) = pre_tokens {
+                    a.peak = a.peak.max(*p);
+                    if *auto == Some(true) {
+                        a.auto_at = Some(*p);
+                    }
+                }
                 a.context = 0;
                 if who == AgentRef::Lead {
                     self.context = 0;
@@ -300,6 +334,14 @@ impl Session {
         if self.status == Status::Working && quiet(self.last) > Duration::from_secs(180) {
             self.set_status(Status::Idle, now);
         }
+        // a long run spawns helpers by the thousand: only the latest finished ones are kept
+        let done = self.agents.values().filter(|a| a.done).count();
+        if done > KEEP_DONE {
+            let mut ends: Vec<SystemTime> = self.agents.values().filter(|a| a.done).map(|a| a.last).collect();
+            ends.sort_unstable();
+            let cut = ends[done - KEEP_DONE];
+            self.agents.retain(|_, a| !a.done || a.last >= cut);
+        }
     }
 
     /// API list price estimate in USD. Real billing depends on plan and model.
@@ -309,22 +351,100 @@ impl Session {
         (u.input as f64 * inp + u.cache_write as f64 * inp * 1.25 + u.cache_read as f64 * inp * 0.1 + u.output as f64 * out) / 1e6
     }
 
-    /// Context window size for the model, for the "context" gauge.
-    pub fn context_window(&self) -> u64 {
-        if let Some(w) = self.window.filter(|w| *w > 0) {
-            return w;
-        }
-        let m = self.model.as_deref().unwrap_or("").to_ascii_lowercase();
-        if m.contains("1m") {
-            1_000_000
-        } else if m.contains("gpt") || m.contains("codex") {
-            272_000
-        } else if m.contains("gemini") {
-            1_000_000
+    /// The context window of one agent (the lead when `who` is not in the session) and where
+    /// that number came from. `set` is the user's own compaction setting for this harness.
+    pub fn window(&self, who: &AgentRef, set: &Settings) -> (u64, WindowFrom) {
+        let a = self.agents.get(who).or_else(|| self.agents.get(&AgentRef::Lead));
+        let model = a.and_then(|a| a.model.as_deref()).or(self.model.as_deref()).unwrap_or("");
+        let (w, from) = if let Some(w) = self.window.filter(|w| *w > 0) {
+            (w, WindowFrom::Log)
+        } else if let Some(w) = set.window.as_ref().map(|w| w.0).filter(|w| *w > 0) {
+            (w, WindowFrom::Setting)
+        } else if let Some(at) = a.and_then(|a| a.auto_at) {
+            // it compacted itself at `at`: near the limit, or at the share the user set
+            let share = match set.rule.as_ref().map(|r| &r.0) {
+                Some(Rule::Share(x)) if *x > 0.05 => *x as f64,
+                _ => 1.0,
+            };
+            (round_up((at as f64 / share) as u64), WindowFrom::Compaction)
         } else {
-            200_000
+            model_window(model).map_or((200_000, WindowFrom::Default), |w| (w, WindowFrom::Model))
+        };
+        // nothing carries more than its window: when this one did, the window is bigger
+        match a.map_or(0, |a| a.peak) {
+            p if p > w => (round_up(p), WindowFrom::Seen),
+            _ => (w, from),
         }
     }
+
+    /// The lead's window, with no settings known.
+    pub fn context_window(&self) -> u64 {
+        self.window(&AgentRef::Lead, &Settings::default()).0
+    }
+}
+
+/// Where a context window's size came from, most trusted first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowFrom {
+    /// the harness wrote it in the log
+    Log,
+    /// the user set it (Claude Code's `autoCompactWindow`, Codex's `model_context_window`)
+    Setting,
+    /// what the agent's last automatic compaction implies
+    Compaction,
+    /// what the model takes
+    Model,
+    /// the agent carried more than any of the above allow
+    Seen,
+    /// an unknown model
+    Default,
+}
+
+/// The window sizes models come in, for rounding a size seen in a log up to a real one.
+const WINDOWS: [u64; 10] = [128_000, 200_000, 256_000, 272_000, 400_000, 500_000, 1_000_000, 2_000_000, 4_000_000, 10_000_000];
+
+fn round_up(n: u64) -> u64 {
+    WINDOWS.iter().copied().find(|&w| w >= n).unwrap_or(n)
+}
+
+/// The context window a model takes, by its name as harnesses log it.
+pub fn model_window(model: &str) -> Option<u64> {
+    let m = model.to_ascii_lowercase();
+    if m.contains("[1m]") || m.ends_with("-1m") {
+        return Some(1_000_000);
+    }
+    let has = |keys: &[&str]| keys.iter().any(|k| m.contains(k));
+    if has(&["claude", "opus", "sonnet", "haiku", "fable", "mythos"]) {
+        if has(&["fable", "mythos"]) {
+            return Some(1_000_000);
+        }
+        // the version after the family name: claude-opus-4-6, claude-sonnet-5, claude-3-7-sonnet
+        let v: Vec<u32> = m.split(|c: char| !c.is_ascii_digit()).filter(|p| !p.is_empty() && p.len() < 3).filter_map(|p| p.parse().ok()).collect();
+        let (major, minor) = (v.first().copied().unwrap_or(0), v.get(1).copied().unwrap_or(0));
+        return Some(if major >= 5 || (major == 4 && minor >= 6) { 1_000_000 } else { 200_000 });
+    }
+    if has(&["gemini"]) {
+        return Some(1_000_000);
+    }
+    if has(&["gpt-4.1"]) {
+        return Some(1_000_000);
+    }
+    if has(&["gpt-5", "codex"]) {
+        return Some(272_000);
+    }
+    if has(&["gpt-4o", "deepseek", "devstral"]) {
+        return Some(128_000);
+    }
+    if has(&["o3", "o4-mini", "o1"]) && m.starts_with('o') {
+        return Some(200_000);
+    }
+    if has(&["qwen", "kimi", "grok"]) {
+        return Some(256_000);
+    }
+    if has(&["glm"]) {
+        return Some(200_000);
+    }
+    None
 }
 
 /// (input, output) USD per million tokens, rough list prices by model family.
@@ -366,5 +486,78 @@ mod tests {
         assert_eq!(s.live_agents().count(), 1);
         s.apply(&ev(AgentRef::Lead, EventKind::TurnEnd));
         assert_eq!(s.status, Status::NeedsYou);
+    }
+
+    #[test]
+    fn the_window_comes_from_the_most_trusted_place() {
+        let key = |h: &'static str| SessionKey { harness: h, id: "s".into() };
+        let at = |k: &SessionKey, agent: AgentRef, kind: EventKind| Event { session: k.clone(), agent, at: SystemTime::now(), kind };
+        let k = key("claude-code");
+        let mut s = Session::new(k.clone(), "Claude Code", SystemTime::now());
+        s.apply(&at(&k, AgentRef::Lead, EventKind::Meta { cwd: None, branch: None, model: Some("claude-opus-5-5".into()), title: None }));
+        let none = Settings::default();
+        assert_eq!(s.window(&AgentRef::Lead, &none), (1_000_000, WindowFrom::Model));
+        let set = Settings { rule: None, window: Some((500_000, "~/.claude/settings.json".into())) };
+        assert_eq!(s.window(&AgentRef::Lead, &set), (500_000, WindowFrom::Setting));
+        // a helper on an older model has the smaller window
+        s.apply(&at(&k, AgentRef::Lead, EventKind::SubagentStart { agent_id: "h".into(), description: "x".into(), kind: None }));
+        s.apply(&at(&k, AgentRef::Sub("h".into()), EventKind::Meta { cwd: None, branch: None, model: Some("claude-haiku-4-5-20251001".into()), title: None }));
+        assert_eq!(s.window(&AgentRef::Sub("h".into()), &none), (200_000, WindowFrom::Model));
+        // compacting on its own at 467k says the window is 500k
+        s.apply(&at(&k, AgentRef::Lead, EventKind::Compacted { pre_tokens: Some(467_276), auto: Some(true) }));
+        assert_eq!(s.window(&AgentRef::Lead, &none), (500_000, WindowFrom::Compaction));
+        // never smaller than what it carried
+        let u = Usage { input: 10, output: 10, cache_read: 690_000, cache_write: 0 };
+        s.apply(&at(&k, AgentRef::Lead, EventKind::Usage(u)));
+        assert_eq!(s.window(&AgentRef::Lead, &set), (1_000_000, WindowFrom::Seen));
+        assert_eq!(s.agents[&AgentRef::Lead].compactions, 1);
+    }
+
+    #[test]
+    fn a_big_drop_in_context_counts_as_a_compaction_where_the_log_says_nothing() {
+        let k = SessionKey { harness: "gemini-cli", id: "s".into() };
+        let mut s = Session::new(k.clone(), "Gemini CLI", SystemTime::now());
+        let usage = |n: u64| Event { session: k.clone(), agent: AgentRef::Lead, at: SystemTime::now(), kind: EventKind::Usage(Usage { input: n, ..Usage::default() }) };
+        for n in [40_000, 90_000, 150_000, 30_000, 45_000] {
+            s.apply(&usage(n));
+        }
+        assert_eq!(s.agents[&AgentRef::Lead].compactions, 1);
+        assert_eq!(s.agents[&AgentRef::Lead].peak, 150_000);
+    }
+
+    #[test]
+    fn model_windows() {
+        for (m, w) in [
+            ("claude-opus-5-5", 1_000_000),
+            ("claude-sonnet-4-6", 1_000_000),
+            ("claude-fable-5-1", 1_000_000),
+            ("claude-haiku-5-5", 1_000_000),
+            ("claude-haiku-4-5-20251001", 200_000),
+            ("claude-sonnet-4-5-20250929", 200_000),
+            ("claude-sonnet-4-5[1m]", 1_000_000),
+            ("claude-opus-4-20250514", 200_000),
+            ("claude-3-7-sonnet-20250219", 200_000),
+            ("us.anthropic.claude-opus-4-1-20250805-v1:0", 200_000),
+            ("gpt-5.3-codex", 272_000),
+            ("gemini-3-pro", 1_000_000),
+        ] {
+            assert_eq!(model_window(m), Some(w), "{m}");
+        }
+        assert_eq!(model_window("some-local-model"), None);
+    }
+
+    #[test]
+    fn finished_helpers_do_not_pile_up() {
+        let k = SessionKey { harness: "t", id: "s".into() };
+        let mut s = Session::new(k.clone(), "Test", SystemTime::now());
+        for n in 0..500 {
+            let id = format!("h{n}");
+            s.apply(&ev(AgentRef::Lead, EventKind::SubagentStart { agent_id: id.clone(), description: "x".into(), kind: None }));
+            s.apply(&ev(AgentRef::Lead, EventKind::SubagentEnd { agent_id: id }));
+        }
+        s.apply(&ev(AgentRef::Lead, EventKind::SubagentStart { agent_id: "live".into(), description: "x".into(), kind: None }));
+        s.tick(SystemTime::now());
+        assert!(s.agents.len() <= KEEP_DONE + 2, "{}", s.agents.len());
+        assert_eq!(s.live_agents().count(), 2);
     }
 }

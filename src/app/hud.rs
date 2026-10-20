@@ -457,12 +457,16 @@ impl App {
     fn context_gauge(&self, s: &Session, st: Option<&crate::session::AgentState>) -> El<'static> {
         use crate::harness::compaction::Rule;
         let pal = p();
-        let window = s.context_window().max(1);
+        use crate::session::WindowFrom;
+        let who = st.map_or(crate::model::AgentRef::Lead, |st| st.id.clone());
+        let known = matches!(s.key.harness, "claude-code" | "codex" | "gemini-cli" | "qwen-code" | "goose");
+        let settings = if known { self.settings_of(s, &who) } else { Default::default() };
+        let (window, from) = s.window(&who, &settings);
+        let window = window.max(1);
         let (ctx, times, last) = st.map_or((0, 0, None), |st| (st.context, st.compactions, st.compacted_at));
         let share = (ctx as f32 / window as f32).clamp(0.0, 1.0);
-        let known = matches!(s.key.harness, "claude-code" | "codex" | "gemini-cli" | "qwen-code");
-        let setting = if known { self.compaction_for(s.key.harness, s.cwd.as_deref()) } else { None };
-        let mark = match setting.as_ref().map(|c| &c.rule) {
+        let setting = settings.rule.as_ref();
+        let mark = match setting.map(|c| &c.0) {
             Some(Rule::Share(x)) => Some(*x),
             Some(Rule::Tokens(n)) => Some((*n as f32 / window as f32).min(1.0)),
             _ => None,
@@ -475,7 +479,7 @@ impl App {
             let at = ((m * 1000.0) as u16).clamp(1, 999);
             bar = bar.push(row![Space::new().width(Length::FillPortion(at)), container(Space::new()).width(2).height(10).style(style::fill(pal.text, 1.0)), Space::new().width(Length::FillPortion(1000 - at))].align_y(Alignment::Center).height(6));
         }
-        let rule = match setting.as_ref().map(|c| &c.rule) {
+        let rule = match setting.map(|c| &c.0) {
             Some(Rule::Off) => "Auto-compact off".to_owned(),
             Some(Rule::Share(x)) => format!("Compacts at {:.0}%", x * 100.0),
             Some(Rule::Tokens(n)) => format!("Compacts at {}", fmt_k(*n)),
@@ -489,11 +493,20 @@ impl App {
         .spacing(5);
         let mut notes: Vec<String> = Vec::new();
         if !rule.is_empty() {
-            notes.push(match &setting {
-                Some(c) => format!("{rule} · {}", c.from),
+            notes.push(match setting {
+                Some(c) => format!("{rule} · {}", c.1),
                 None => format!("{rule} (default)"),
             });
         }
+        let model = st.and_then(|st| st.model.as_deref()).or(s.model.as_deref()).unwrap_or("the model");
+        notes.push(match from {
+            WindowFrom::Log => format!("{} window, as the log says", fmt_k(window)),
+            WindowFrom::Setting => format!("{} window · {}", fmt_k(window), settings.window.as_ref().map_or("", |w| w.1.as_str())),
+            WindowFrom::Compaction => format!("{} window, from where it last compacted", fmt_k(window)),
+            WindowFrom::Model => format!("{} window · {model}", fmt_k(window)),
+            WindowFrom::Seen => format!("At least {}: it has carried more", fmt_k(window)),
+            WindowFrom::Default => format!("{} window (model not known)", fmt_k(window)),
+        });
         if times > 0 {
             let ago = last.map(|t| format!(", last {} ago", fmt_ago(ago(t)))).unwrap_or_default();
             notes.push(format!("Compacted {times}×{ago}"));

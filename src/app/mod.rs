@@ -32,6 +32,9 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 /// Room the floating bars take at the top and bottom of the stage.
+/// (harness, project, model)
+type SettingsKey = (String, Option<PathBuf>, Option<String>);
+
 const PAD_TOP: f32 = 108.0;
 const PAD_BOTTOM: f32 = 72.0;
 
@@ -173,6 +176,8 @@ pub struct Tab {
     building: bool,
     board: Option<Layer>,
     board_stats: Option<BoardStats>,
+    /// the room's `generation` its painted layers are for
+    painted: u32,
 }
 
 pub struct App {
@@ -220,8 +225,8 @@ pub struct App {
     pub tab_since: Instant,
     /// the dropdown that is open, if any
     pub menu: Option<&'static str>,
-    /// each harness's compaction setting per project, read in the background
-    compaction: Arc<std::sync::Mutex<HashMap<(String, Option<PathBuf>), (Instant, Option<crate::harness::compaction::Compaction>)>>>,
+    /// each harness's compaction and window settings per project and model, read in the background
+    compaction: Arc<std::sync::Mutex<HashMap<SettingsKey, (Instant, crate::harness::compaction::Settings)>>>,
     pub page: Page,
     pub colors_open: bool,
     /// debug: select the first agent once an office has one
@@ -435,7 +440,7 @@ impl App {
             }
             Message::ZoomAt(p, f) => {
                 let z = self.zoom_to.map_or(self.cam.z, |(z, _)| z);
-                self.zoom_to = Some(((z * f).clamp(1.0, crate::render::MAX_ZOOM), p));
+                self.zoom_to = Some(((z * f).clamp(1.0, self.cam.max_z), p));
                 self.fitting = false;
             }
             Message::Zoom(f) => return self.update(Message::ZoomAt(Point::new(self.stage.width / 2.0, self.stage.height / 2.0), f)),
@@ -713,6 +718,7 @@ impl App {
         let b = Bounds::of(&t.world.s.layout);
         let narrow = self.stage.width < 900.0;
         let fresh = fresh || self.cam.bounds != b;
+        self.cam.max_z = crate::render::max_zoom(&t.world.s.layout);
         self.cam.layout(b, self.stage.width, self.stage.height, if narrow { PAD_TOP + 40.0 } else { PAD_TOP }, PAD_BOTTOM, fresh);
     }
 
@@ -774,8 +780,8 @@ impl App {
                 let seed = self.seed_for(s);
                 let uid = self.next_uid;
                 self.next_uid += 1;
-                let world = self.world_for(&s.project(), seed);
-                self.tabs.push(Tab { key: s.key.clone(), world, uid, seed, statics: None, building: false, board: None, board_stats: None });
+                let world = self.world_for(&s.project(), seed, s.live_agents().count());
+                self.tabs.push(Tab { key: s.key.clone(), world, uid, seed, statics: None, building: false, board: None, board_stats: None, painted: 0 });
             }
         }
         let before = self.active;
@@ -786,8 +792,9 @@ impl App {
         }
     }
 
-    fn world_for(&self, project: &str, seed: u32) -> World {
-        Self::styled(World::new(project, seed), &self.config())
+    /// The office for a project, sized for the `crew` in it now (it grows later if need be).
+    fn world_for(&self, project: &str, seed: u32, crew: usize) -> World {
+        Self::styled(World::for_crew(project, seed, crew), &self.config())
     }
 
     /// Applies a fixed office style from the settings, if one is picked.
@@ -801,7 +808,7 @@ impl App {
     fn new_layout(&mut self) {
         let Some(key) = self.tab().map(|t| t.key.clone()) else { return };
         let Some(s) = self.sessions.get(&key) else { return };
-        let project = s.project();
+        let (project, crew) = (s.project(), s.live_agents().count());
         let seed = hash(&format!("{key}:{}", self.started.elapsed().as_nanos()));
         // pinned to this session only; other sessions of the project keep theirs
         if let Ok(mut c) = self.cfg.write() {
@@ -812,9 +819,9 @@ impl App {
         self.tab_since = Instant::now();
         let uid = self.next_uid;
         self.next_uid += 1;
-        let world = self.world_for(&project, seed);
+        let world = self.world_for(&project, seed, crew);
         if let Some(t) = self.tabs.get_mut(self.active) {
-            *t = Tab { key, world, uid, seed, statics: None, building: false, board: None, board_stats: None };
+            *t = Tab { key, world, uid, seed, statics: None, building: false, board: None, board_stats: None, painted: 0 };
         }
         self.selected = None;
         self.relayout(true);
@@ -850,11 +857,25 @@ impl App {
             }
             self.refresh_tabs();
         }
-        for t in &mut self.tabs {
+        let mut grew = false;
+        for (i, t) in self.tabs.iter_mut().enumerate() {
             if let Some(s) = self.sessions.get(&t.key) {
                 t.world.sync(s);
             }
             t.world.step(dt);
+            // a crew that outgrew its room got a bigger one: paint it afresh
+            if t.world.generation != t.painted {
+                t.painted = t.world.generation;
+                (t.statics, t.building, t.board, t.board_stats) = (None, false, None, None);
+                t.uid = self.next_uid;
+                self.next_uid += 1;
+                grew |= i == self.active;
+            }
+        }
+        if grew {
+            // the same people in a bigger room: whoever was picked stays picked
+            self.tab_since = Instant::now();
+            self.relayout(false);
         }
         if self.selected.is_some_and(|id| self.tab().is_none_or(|t| t.world.avatar(id).is_none())) {
             self.selected = None;
@@ -863,7 +884,9 @@ impl App {
         if self.follow {
             if let Some(h) = self.selected.and_then(|id| self.scene.heads.iter().find(|h| h.id == id)).copied() {
                 let e = (dt * 3.5).min(1.0);
-                self.cam.z += (1.9 - self.cam.z) * e;
+                // as close as following someone in a small office, however big this one is
+                let z = 1.9 * self.cam.max_z / crate::render::MAX_ZOOM;
+                self.cam.z += (z - self.cam.z) * e;
                 self.cam.cx += (h.x - self.cam.cx) * e;
                 self.cam.cy += ((h.top + h.bottom) / 2.0 - self.cam.cy) * e;
                 self.cam.clamp();
@@ -899,7 +922,7 @@ impl App {
         }
         // the board hangs on the back wall: nothing to repaint while that wall is out of sight
         let back = self.tab().is_some_and(|t| self.view_of(t).behind(view::Wall::Back));
-        let stats = if back { self.session().map(board_stats) } else { None };
+        let stats = if back { self.session().map(|s| board_stats(s, s.window(&crate::model::AgentRef::Lead, &self.settings_of(s, &crate::model::AgentRef::Lead)).0)) } else { None };
         let Some(t) = self.tabs.get_mut(self.active) else { return };
         if t.statics.is_none() && !t.building {
             t.building = true;
@@ -920,24 +943,30 @@ impl App {
         }
     }
 
-    /// The user's compaction setting for a session's harness and project. Read on a worker the
-    /// first time and every 30 s after, so the HUD never waits on a file.
-    pub fn compaction_for(&self, harness: &str, cwd: Option<&std::path::Path>) -> Option<crate::harness::compaction::Compaction> {
-        let key = (harness.to_owned(), cwd.map(PathBuf::from));
-        let mut map = self.compaction.lock().ok()?;
+    /// The user's compaction and window settings for a session's harness, project and model.
+    /// Read on a worker the first time and every 30 s after, so the HUD never waits on a file.
+    pub fn settings_for(&self, harness: &str, cwd: Option<&std::path::Path>, model: Option<&str>) -> crate::harness::compaction::Settings {
+        let key = (harness.to_owned(), cwd.map(PathBuf::from), model.map(str::to_owned));
+        let Ok(mut map) = self.compaction.lock() else { return Default::default() };
         let stale = map.get(&key).is_none_or(|(at, _)| at.elapsed() > Duration::from_secs(30));
         if stale {
-            let known = map.get(&key).and_then(|(_, c)| c.clone());
+            let known = map.get(&key).map(|(_, c)| c.clone()).unwrap_or_default();
             map.insert(key.clone(), (Instant::now(), known));
             let (shared, job) = (self.compaction.clone(), key.clone());
             std::thread::spawn(move || {
-                let found = crate::harness::compaction::read(&job.0, job.1.as_deref());
+                let found = crate::harness::compaction::read(&job.0, job.1.as_deref(), job.2.as_deref());
                 if let Ok(mut map) = shared.lock() {
                     map.insert(job, (Instant::now(), found));
                 }
             });
         }
-        map.get(&key).and_then(|(_, c)| c.clone())
+        map.get(&key).map(|(_, c)| c.clone()).unwrap_or_default()
+    }
+
+    /// The settings that apply to one agent of a session (helpers may run another model).
+    pub fn settings_of(&self, s: &Session, who: &crate::model::AgentRef) -> crate::harness::compaction::Settings {
+        let model = s.agents.get(who).and_then(|a| a.model.as_deref()).or(s.model.as_deref());
+        self.settings_for(s.key.harness, s.cwd.as_deref(), model)
     }
 
     pub fn started_secs(&self) -> f32 {
@@ -1136,7 +1165,7 @@ impl App {
 }
 
 /// The session numbers the whiteboard shows.
-fn board_stats(s: &Session) -> BoardStats {
+fn board_stats(s: &Session, window: u64) -> BoardStats {
     let now = SystemTime::now();
     let secs = |t: SystemTime| now.duration_since(t).unwrap_or_default().as_secs();
     let mut tools = [0u32; 5];
@@ -1165,7 +1194,7 @@ fn board_stats(s: &Session) -> BoardStats {
         tok_out: u.output,
         cache: u.cache_read as f32 / total_in as f32,
         files: s.files_touched,
-        ctx: (s.context as f32 / s.context_window() as f32).min(1.0),
+        ctx: (s.context as f32 / window.max(1) as f32).min(1.0),
         tools,
     }
 }

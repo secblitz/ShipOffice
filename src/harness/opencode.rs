@@ -412,6 +412,11 @@ impl Reader {
                 seen.done = true;
                 out.push(self.end(at));
             }
+            // the history summarised to make room
+            "compaction" => {
+                seen.done = true;
+                out.push(self.ev(at, EventKind::Compacted { pre_tokens: None, auto: v.get("auto").and_then(Value::as_bool) }));
+            }
             _ => seen.done = true,
         }
     }
@@ -511,6 +516,10 @@ impl Reader {
                 let name = v.get("tool").and_then(Value::as_str).unwrap_or("tool");
                 let status = v.pointer("/state/status").and_then(Value::as_str).unwrap_or("");
                 self.tool(&id, name, status, &v["state"]["input"], at, seen, out);
+            }
+            "compaction" if !seen.done => {
+                seen.done = true;
+                out.push(self.ev(at, EventKind::Compacted { pre_tokens: None, auto: v.get("auto").and_then(Value::as_bool) }));
             }
             "step-finish" if !seen.done => {
                 seen.done = true;

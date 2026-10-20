@@ -186,7 +186,7 @@ impl Reader {
 }
 
 /// The top-level `key: value` pairs of `workspace.yaml`, which is all this needs from it.
-fn yaml_fields(path: &Path) -> HashMap<String, String> {
+pub fn yaml_fields(path: &Path) -> HashMap<String, String> {
     let Some(text) = read_capped(path, 1024 * 1024).and_then(|b| String::from_utf8(b).ok()) else { return HashMap::new() };
     text.lines()
         .filter(|l| !l.starts_with([' ', '\t', '#', '-']))

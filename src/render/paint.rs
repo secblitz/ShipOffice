@@ -66,6 +66,14 @@ fn rect(pm: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, paint: &Paint, t: Trans
 
 /// Floor pixels per tile, and wall pixels per wall-space px.
 pub const FLOOR_RES: f32 = 128.0;
+/// The floor texture's longest side at most: a grown office gets fewer pixels per tile, which
+/// is all it needs, as it is seen from further away.
+const FLOOR_MAX: f32 = 3072.0;
+
+/// Floor pixels per tile for this room.
+pub fn floor_res(o: &Layout) -> f32 {
+    FLOOR_RES.min((FLOOR_MAX / o.w.max(o.h) as f32).floor())
+}
 pub const WALL_RES: f32 = 2.0;
 /// Fraction of the wall height a cut-away wall keeps.
 pub const CUTAWAY: f32 = 0.16;
@@ -88,7 +96,7 @@ fn into_image(pm: Pixmap) -> RgbaImage {
 
 /// The floor seen from straight above, one square per tile.
 pub fn floor(o: &Layout) -> RgbaImage {
-    let t = FLOOR_RES;
+    let t = floor_res(o);
     let mut pm = Pixmap::new((o.w as f32 * t) as u32, (o.h as f32 * t) as u32).unwrap();
     let base = Transform::from_scale(t, t);
     let th = o.theme;
@@ -341,7 +349,7 @@ mod tests {
     fn paints_a_floor_and_a_board() {
         let o = generate(3);
         let st = statics(&o);
-        assert_eq!(st.floor.dimensions(), ((o.w as f32 * FLOOR_RES) as u32, (o.h as f32 * FLOOR_RES) as u32));
+        assert_eq!(st.floor.dimensions(), ((o.w as f32 * floor_res(&o)) as u32, (o.h as f32 * floor_res(&o)) as u32));
         assert!(st.floor.pixels().all(|p| p[3] == 255), "the floor is opaque edge to edge");
         if let Ok(d) = std::env::var("SHIPOFFICE_DUMP") {
             st.floor.save(format!("{d}/floor.png")).unwrap();

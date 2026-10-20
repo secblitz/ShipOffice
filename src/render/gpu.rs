@@ -325,7 +325,7 @@ impl Pipeline {
             }
         }
         let made = match key {
-            TexKey::Sheet(name) => meta().anims.get(name).and_then(|a| {
+            TexKey::Sheet(name) => meta().anims.get(*name).and_then(|a| {
                 let src = decode(&a.file)?;
                 let mask = a.mask.as_deref().and_then(assets::file).and_then(|b| image::load_from_memory(b).ok()).map(|m| m.to_luma8());
                 Some(match mask {

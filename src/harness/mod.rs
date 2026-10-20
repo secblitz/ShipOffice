@@ -74,6 +74,11 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
     ]
 }
 
+/// Harnesses whose logs mark every compaction; for the rest one is read off the context size.
+pub fn marks_compactions(harness: &str) -> bool {
+    matches!(harness, "claude-code" | "codex")
+}
+
 /// The user's home directory, or an empty path when there is none.
 pub fn home() -> PathBuf {
     directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf()).unwrap_or_default()

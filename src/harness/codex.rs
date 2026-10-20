@@ -135,7 +135,7 @@ impl Reader {
                 out.push(self.ev(at, EventKind::Meta { cwd, branch: None, model, title: None }));
             }
             "response_item" => self.item(p, ptype, at, out),
-            "compacted" => out.push(self.ev(at, EventKind::Compacted { pre_tokens: None })),
+            "compacted" => out.push(self.ev(at, EventKind::Compacted { pre_tokens: None, auto: None })),
             "token_usage_record" => {
                 if let Some(u) = p.get("usage") {
                     out.push(self.ev(at, EventKind::Usage(usage(u))));
@@ -174,7 +174,13 @@ impl Reader {
                         }
                     }
                 }
-                "context_compacted" => out.push(self.ev(at, EventKind::Compacted { pre_tokens: None })),
+                // newer rollouts say the window as each turn starts
+                "task_started" => {
+                    if let Some(w) = p.get("model_context_window").and_then(Value::as_u64) {
+                        out.push(self.ev(at, EventKind::ContextWindow(w)));
+                    }
+                }
+                "context_compacted" => out.push(self.ev(at, EventKind::Compacted { pre_tokens: None, auto: None })),
                 "item_completed" => {
                     let item = &p["item"];
                     if item.get("type").and_then(Value::as_str) == Some("SubAgentActivity")

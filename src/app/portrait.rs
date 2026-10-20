@@ -25,20 +25,37 @@ pub fn face_image(char_id: u8, palette: &Palette) -> Option<RgbaImage> {
     face(char_id, &[1usize, 2, 3, 5].map(|r| palette.cols[r].unwrap_or([128, 128, 128])))
 }
 
+/// A character's first standing frame and its recolour mask, decoded from the sheet once: a
+/// crowd has many outfits but only a few characters.
+fn still(char_id: u8) -> Option<std::sync::Arc<(RgbaImage, Option<image::GrayImage>)>> {
+    type Stills = Mutex<HashMap<u8, Option<std::sync::Arc<(RgbaImage, Option<image::GrayImage>)>>>>;
+    static CACHE: OnceLock<Stills> = OnceLock::new();
+    let mut cache = CACHE.get_or_init(Default::default).lock().ok()?;
+    cache
+        .entry(char_id)
+        .or_insert_with(|| {
+            let a = meta().anims.get(&sheet_key("stand8", char_id)).or_else(|| meta().anims.get(&sheet_key("idle", char_id)))?;
+            let sheet = decode(&a.file)?;
+            let frame = image::imageops::crop_imm(&sheet, 0, 0, a.fw, a.fh).to_image();
+            let mask = a.mask.as_deref().and_then(assets::file).and_then(|b| image::load_from_memory(b).ok()).map(|m| m.to_luma8());
+            let mask = mask.filter(|m| m.dimensions() == sheet.dimensions()).map(|m| image::imageops::crop_imm(&m, 0, 0, a.fw, a.fh).to_image());
+            Some(std::sync::Arc::new((frame, mask)))
+        })
+        .clone()
+}
+
 /// The standing still that faces you (the hand-drawn idle sheet for a character without one),
 /// recoloured, cut to a square around the head with room to spare, so the head sits whole
 /// inside a round frame.
 fn face(char_id: u8, cols: &[[u8; 3]; 4]) -> Option<RgbaImage> {
-    let a = meta().anims.get(&sheet_key("stand8", char_id)).or_else(|| meta().anims.get(&sheet_key("idle", char_id)))?;
-    let sheet = decode(&a.file)?;
-    let frame = image::imageops::crop_imm(&sheet, 0, 0, a.fw, a.fh).to_image();
-    // the same split the GPU uses, then the shader's sum done here: rgb = fixed + shade·Σ w·col
-    let mask = a.mask.as_deref().and_then(assets::file).and_then(|b| image::load_from_memory(b).ok()).map(|m| m.to_luma8());
-    let img = match mask.filter(|m| m.dimensions() == sheet.dimensions()) {
+    let (frame, mask) = &*still(char_id)?;
+    let (frame, mask) = (frame.clone(), mask.clone());
+    let img = match mask {
         Some(mask) => {
-            let mask = image::imageops::crop_imm(&mask, 0, 0, a.fw, a.fh).to_image();
+            // the same split the GPU uses, then the shader's sum done here: rgb = fixed + shade·Σ w·col
             let (fixed, weights) = split_sheet(&frame, &mask);
-            let mut out = RgbaImage::new(a.fw, a.fh);
+            let (fw, fh) = frame.dimensions();
+            let mut out = RgbaImage::new(fw, fh);
             for (x, y, p) in out.enumerate_pixels_mut() {
                 let (f, w) = (fixed.get_pixel(x, y), weights.get_pixel(x, y));
                 let alpha = f[3] as f32 / 255.0;

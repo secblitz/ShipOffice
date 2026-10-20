@@ -62,7 +62,7 @@ pub enum Fx {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TexKey {
     /// a character animation sheet, by its meta.json key
-    Sheet(String),
+    Sheet(&'static str),
     /// a plain atlas file (props, cafe set, the empty desk)
     Atlas(&'static str),
     Fx(Fx),
@@ -103,6 +103,8 @@ pub struct Camera {
     /// how far the HUD pushes the room's centre up, in world px at fit
     shift: f32,
     pads: (f32, f32),
+    /// the furthest zoom in, for this room's size
+    pub max_z: f32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -128,9 +130,15 @@ impl Bounds {
 
 pub const MAX_ZOOM: f32 = 2.8;
 
+/// How far in the camera zooms on this room: further on a grown office, so a person can still be
+/// seen as close up as in a small one.
+pub fn max_zoom(o: &crate::office::gen::Layout) -> f32 {
+    MAX_ZOOM * ((o.w + o.h) as f32 / 30.0).max(1.0)
+}
+
 impl Camera {
     pub fn new() -> Self {
-        Self { z: 1.0, cx: 0.0, cy: 0.0, fit: 1.0, home: (0.0, 0.0), bounds: Bounds::default(), w: 1.0, h: 1.0, shift: 0.0, pads: (0.0, 0.0) }
+        Self { z: 1.0, cx: 0.0, cy: 0.0, fit: 1.0, home: (0.0, 0.0), bounds: Bounds::default(), w: 1.0, h: 1.0, shift: 0.0, pads: (0.0, 0.0), max_z: MAX_ZOOM }
     }
 
     /// Fits the office into the stage, leaving room for the HUD bars. `fresh` recentres.
@@ -203,7 +211,7 @@ impl Camera {
 
     pub fn zoom_at(&mut self, sx: f32, sy: f32, factor: f32) {
         let (wx, wy) = self.to_world(sx, sy);
-        self.z = (self.z * factor).clamp(1.0, MAX_ZOOM);
+        self.z = (self.z * factor).clamp(1.0, self.max_z);
         let s = self.scale();
         self.cx = wx - (sx - self.w / 2.0) / s;
         self.cy = wy - (sy - self.h / 2.0) / s;

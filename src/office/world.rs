@@ -6,11 +6,11 @@
 //! always follows the real work while the in-between moments (coffee, ping pong, the couch)
 //! stay lively on their own.
 
-use super::gen::{generate, Layout, Play, SeatKind};
+use super::gen::{generate, generate_for, Layout, Play, SeatKind, MAX_CREW};
 use super::{hash, tile, Face, Rng, Tile};
 use crate::model::{Activity, AgentRef, Event, EventKind};
 use crate::session::{Session, Status};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, SystemTime};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -358,7 +358,7 @@ pub struct Shared {
     rng: Rng,
     reporting: Vec<Tile>,
     /// tiles someone stands on or is walking to, refreshed every frame
-    busy_tiles: Vec<(u32, Tile)>,
+    busy_tiles: Claims,
     /// tiles nobody stands on: seats, the floor a workstation's drawing covers, the paths to
     /// them, the bar and the door
     keep_clear: HashSet<Tile>,
@@ -392,6 +392,33 @@ pub struct World {
     pub s: Shared,
     pub project: String,
     next_id: u32,
+    seed: u32,
+    /// the crew the room was last built for
+    built_for: usize,
+    /// counts up each time the room is rebuilt bigger, so its painted floor and walls are redone
+    pub generation: u32,
+}
+
+/// Who has claimed which floor tile; a tile claimed by two is nobody's to take.
+#[derive(Default)]
+struct Claims(HashMap<Tile, (u32, bool)>);
+
+impl Claims {
+    fn claim(&mut self, id: u32, t: Tile) {
+        self.0.entry(t).and_modify(|e| e.1 |= e.0 != id).or_insert((id, false));
+    }
+
+    fn taken(&self, id: u32, t: Tile) -> bool {
+        self.0.get(&t).is_some_and(|&(who, shared)| shared || who != id)
+    }
+}
+
+/// How many more people than desks a room takes in before it grows; they wait at the whiteboard.
+const SPARE: usize = 2;
+
+/// Rooms are built for crews in steps, so a crew growing by one does not rebuild the room each time.
+fn crew_step(crew: usize) -> usize {
+    [24, 48, 96, 192, 320, MAX_CREW].into_iter().find(|&t| t >= crew).unwrap_or(MAX_CREW)
 }
 
 const SMALL_TALK: [&str; 10] = [
@@ -410,10 +437,64 @@ const SMALL_TALK: [&str; 10] = [
 impl World {
     /// The office for a project. `seed` comes from the project path, or from the config when pinned.
     pub fn new(project: &str, seed: u32) -> Self {
-        let layout = generate(seed);
+        Self::for_crew(project, seed, 0)
+    }
+
+    /// The office for a project with `crew` people in it at once: the seed's own room, grown when
+    /// they would not fit at its desks.
+    pub fn for_crew(project: &str, seed: u32, crew: usize) -> Self {
+        let base = generate(seed);
+        let built_for = if base.desks.len() + SPARE >= crew { 0 } else { crew_step(crew) };
+        let layout = if built_for == 0 { base } else { generate_for(seed, built_for) };
+        Self { avatars: Vec::new(), s: Shared::new(layout, seed), project: project.to_owned(), next_id: 1, seed, built_for, generation: 0 }
+    }
+
+    /// Rebuilds the room bigger for `crew` people, keeping its look and everyone in it: they stand
+    /// where they were (or the nearest free floor) and go about their work from there.
+    fn grow(&mut self, crew: usize) {
+        let target = crew_step(crew);
+        if target <= self.built_for {
+            return;
+        }
+        self.built_for = target;
+        let mut layout = generate_for(self.seed, target);
+        if layout.desks.len() <= self.s.layout.desks.len() {
+            return;
+        }
+        layout.theme = self.s.layout.theme;
+        let old = std::mem::replace(&mut self.s, Shared::new(layout, self.seed));
+        (self.s.elapsed, self.s.cups, self.s.pp_last, self.s.rng) = (old.elapsed, old.cups, old.pp_last, old.rng);
+        self.generation += 1;
+        let s = &mut self.s;
+        for a in &mut self.avatars {
+            a.q.clear();
+            (a.seated, a.desk, a.fade, a.speed, a.anim) = (None, None, None, 0.0, Anim::Stand);
+            if a.lead && !s.layout.desks.is_empty() {
+                s.desk_owner[0] = Some(a.id);
+                a.desk = Some(0);
+                let d = s.layout.desks[0].access();
+                (a.x, a.y) = (d.x as f32, d.y as f32);
+            } else {
+                let here = tile((a.x.round() as i32).clamp(0, s.layout.w - 1), (a.y.round() as i32).clamp(0, s.layout.h - 1));
+                let t = free_spot(a, s, here).unwrap_or(s.layout.door);
+                (a.x, a.y) = (t.x as f32, t.y as f32);
+            }
+            // working again from here: the next sync plans everyone afresh
+            a.mode = Mode::Lounge;
+            a.idle_since = Some(s.elapsed);
+            if a.leaving {
+                a.q.push_back(Step::Walk { to: s.layout.door, label: "Clocking out".into(), path: None, tag: Tag::None });
+                a.q.push_back(Step::Leave);
+            }
+        }
+    }
+}
+
+impl Shared {
+    fn new(layout: Layout, seed: u32) -> Self {
         let clear = keep_clear(&layout);
         let layout_games = layout.lounge.games.len();
-        let s = Shared {
+        Shared {
             desk_owner: vec![None; layout.desks.len()],
             lounge_owner: vec![None; layout.lounge.seats.len()],
             rng: Rng::new(seed ^ 0x9e37_79b9),
@@ -423,16 +504,18 @@ impl World {
             game: None,
             pp_last: [0, 0],
             reporting: Vec::new(),
-            busy_tiles: Vec::new(),
+            busy_tiles: Claims::default(),
             keep_clear: clear,
             bar_busy: Vec::new(),
             chat_t: 2.0,
             play: vec![[None, None]; layout_games],
             play_since: vec![0.0; layout_games],
             playing: Vec::new(),
-        };
-        Self { avatars: Vec::new(), s, project: project.to_owned(), next_id: 1 }
+        }
     }
+}
+
+impl World {
 
     /// Someone is at the coffee machine right now (the machine steams).
     pub fn brewing(&self) -> bool {
@@ -524,19 +607,30 @@ impl World {
     /// Brings the avatars in line with the session: hires new agents, sends finished helpers
     /// to report, and replans anyone whose job changed.
     pub fn sync(&mut self, session: &Session) {
+        // a crew that has outgrown the desks gets a bigger room
+        let crew = session.live_agents().count();
+        if crew > self.s.layout.desks.len() + SPARE && self.built_for < MAX_CREW {
+            self.grow(crew);
+        }
         let mut arrivals = 0;
-        for st in session.agents.values() {
-            if !self.avatars.iter().any(|a| a.agent == st.id && !a.gone) {
-                let room = self.s.layout.desks.len() + 2;
-                let live = self.avatars.iter().filter(|a| !a.gone && !a.leaving).count();
-                if st.done || (st.id != AgentRef::Lead && live >= room) {
+        let here: HashSet<&AgentRef> = self.avatars.iter().filter(|a| !a.gone).map(|a| &a.agent).collect();
+        let hire: Vec<&crate::session::AgentState> = session.agents.values().filter(|st| !st.done && !here.contains(&st.id)).collect();
+        let room = self.s.layout.desks.len() + SPARE;
+        let mut live = self.avatars.iter().filter(|a| !a.gone && !a.leaving).count();
+        // newcomers come in one by one, closer together when a crowd arrives at once
+        let waiting = hire.len() + self.avatars.iter().filter(|a| a.arrive_in > 0.0).count();
+        let gap = (6.6 / waiting.max(1) as f32).clamp(0.1, 1.1);
+        for st in hire {
+            {
+                if st.id != AgentRef::Lead && live >= room {
                     continue;
                 }
+                live += 1;
                 let i = self.hire(&st.id, &st.label, st.kind.clone());
                 if st.id != AgentRef::Lead {
                     let queue = self.avatars.iter().filter(|a| a.arrive_in > 0.0).map(|a| a.arrive_in).fold(0.0, f32::max);
                     let a = &mut self.avatars[i];
-                    a.arrive_in = if arrivals == 0 && queue == 0.0 { 0.01 } else { queue + 1.1 };
+                    a.arrive_in = if arrivals == 0 && queue == 0.0 { 0.01 } else { queue + gap };
                     a.alpha = 0.0;
                     arrivals += 1;
                 }
@@ -617,15 +711,13 @@ impl World {
         let s = &mut self.s;
         s.elapsed += dt;
         // who stands where, and who is at the coffee machine, as of this frame
-        s.busy_tiles = self
-            .avatars
-            .iter()
-            .filter(|a| !a.leaving)
-            .flat_map(|a| {
-                let here = (a.id, tile(a.x.round() as i32, a.y.round() as i32));
-                std::iter::once(here).chain(a.q.iter().filter_map(|st| st.target()).map(move |t| (a.id, t)))
-            })
-            .collect();
+        s.busy_tiles.0.clear();
+        for a in self.avatars.iter().filter(|a| !a.leaving) {
+            s.busy_tiles.claim(a.id, tile(a.x.round() as i32, a.y.round() as i32));
+            for t in a.q.iter().filter_map(|st| st.target()) {
+                s.busy_tiles.claim(a.id, t);
+            }
+        }
         s.bar_busy = self.avatars.iter().flat_map(|a| a.q.iter().map(move |st| (a.id, st.tag()))).filter(|(_, t)| matches!(t, Tag::Bar | Tag::BarQueue)).collect();
         s.playing = self.avatars.iter().filter(|a| a.q.front().is_some_and(|st| matches!(st, Step::Act { tag: Tag::Game(_), started: true, .. }))).map(|a| a.id).collect();
 
@@ -827,14 +919,14 @@ fn keep_clear(o: &Layout) -> HashSet<Tile> {
 
 /// Whether `t` is free to stand on for `a`: open floor nobody else has claimed.
 fn standable(a: &Avatar, s: &Shared, t: Tile) -> bool {
-    !s.layout.blocked(t.x, t.y) && !s.keep_clear.contains(&t) && !s.reporting.contains(&t) && !s.busy_tiles.iter().any(|(id, b)| *id != a.id && *b == t)
+    !s.layout.blocked(t.x, t.y) && !s.keep_clear.contains(&t) && !s.reporting.contains(&t) && !s.busy_tiles.taken(a.id, t)
 }
 
 /// The nearest tile to `from` (walking distance) that `a` can stand on alone, claimed for `a`
 /// at once so the next person planned in the same frame looks elsewhere.
 fn free_spot(a: &Avatar, s: &mut Shared, from: Tile) -> Option<Tile> {
     let t = nearest_free(a, s, from)?;
-    s.busy_tiles.push((a.id, t));
+    s.busy_tiles.claim(a.id, t);
     Some(t)
 }
 
@@ -863,7 +955,7 @@ fn plan_report(a: &mut Avatar, s: &mut Shared, said: String) {
     let pick = cands.iter().copied().find(|&(x, y, _)| standable(a, s, tile(x, y)));
     let (x, y, face) = match pick {
         Some(c) => {
-            s.busy_tiles.push((a.id, tile(c.0, c.1)));
+            s.busy_tiles.claim(a.id, tile(c.0, c.1));
             c
         }
         None => match free_spot(a, s, tile(dx, dy + 1)) {
@@ -1000,7 +1092,7 @@ fn idle(a: &mut Avatar, s: &mut Shared, idle_count: usize, first_idle: Option<u3
         let y = 1 + s.rng.below((s.layout.h - 2) as usize) as i32;
         let t = tile(x, y);
         if standable(a, s, t) && !keep.contains(&t) {
-            s.busy_tiles.push((a.id, t));
+            s.busy_tiles.claim(a.id, t);
             a.q.push_back(Step::Walk { to: t, label: "Stretching legs".into(), path: None, tag: Tag::None });
             break;
         }
@@ -1094,7 +1186,7 @@ fn plan_play(a: &mut Avatar, s: &mut Shared, gi: usize, slot: usize) {
             (t, None, Some(f))
         }
     };
-    s.busy_tiles.push((a.id, to));
+    s.busy_tiles.claim(a.id, to);
     let label = g.kind.label();
     a.q.push_back(Step::Walk { to, label: "Off to play".into(), path: None, tag: Tag::None });
     if g.kind.pair() && slot == 0 {
@@ -1189,8 +1281,9 @@ fn act(a: &mut Avatar, s: &mut Shared, dt: f32, idle_count: usize, first_idle: O
                 left += ((t.x as f32 - at.0).powi(2) + (t.y as f32 - at.1).powi(2)).sqrt();
                 at = (t.x as f32, t.y as f32);
             }
-            // smoothstep-like: gentle at both ends of the walk
-            a.speed = (a.speed + ACCEL * dt * (1.0 - a.speed / WALK_SPEED).max(0.25)).min(WALK_SPEED).min((1.6 * ACCEL * left).sqrt().max(0.45));
+            // smoothstep-like: gentle at both ends of the walk; across a big office, a brisker pace
+            let top = WALK_SPEED * (1.0 + ((left - 10.0) / 25.0).clamp(0.0, 0.6));
+            a.speed = (a.speed + ACCEL * dt * (1.0 - a.speed / top).max(0.25)).min(top).min((1.6 * ACCEL * left).sqrt().max(0.45));
             a.stride += walk_along(a, &mut path, a.speed * dt);
             if path.is_empty() {
                 a.x = a.x.round();

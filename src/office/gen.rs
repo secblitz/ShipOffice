@@ -315,9 +315,50 @@ const GAMES: [GameDef; 11] = [
 /// columns laid out in zones (the coffee bar along the back wall, ping pong with its
 /// scoreboard, a cafe table, a sofa on its rug, and the games), with a clear path to everything.
 pub fn generate(seed: u32) -> Layout {
+    build(seed, 0, 0)
+}
+
+/// The most people one office seats; a bigger crew gathers at the whiteboard.
+pub const MAX_CREW: usize = 512;
+
+/// The office for a crew of `crew` at once: the seed's own room while they fit at its desks, else
+/// the same room grown wider and deeper (rows and columns of desks added, the lounge running
+/// along) until they do.
+pub fn generate_for(seed: u32, crew: usize) -> Layout {
+    let base = build(seed, 0, 0);
+    let want = crew.min(MAX_CREW);
+    if base.desks.len() >= want {
+        return base;
+    }
+    let (mut gw, mut gh) = (0, 0);
+    loop {
+        // keep the desk floor about as deep as it is wide, as far as either side may go
+        let (wide, deep) = (base.w + gw + 2 <= MAX_SIDE, base.h + gh + 3 <= MAX_SIDE);
+        match (wide, deep) {
+            (false, false) => return build(seed, gw, gh),
+            (true, false) => gw += 2,
+            (false, true) => gh += 3,
+            _ if base.w + gw - 9 <= base.h + gh => gw += 2,
+            _ => gh += 3,
+        }
+        // about one desk in six tiles of desk floor: only build rooms that can be big enough
+        let (dw, dh) = (base.px + gw - 3, base.h + gh - 4);
+        if ((dw / 2) * (dh / 3)) as usize >= want {
+            let o = build(seed, gw, gh);
+            if o.desks.len() >= want {
+                return o;
+            }
+        }
+    }
+}
+
+/// The longest side a grown room gets, in tiles.
+const MAX_SIDE: i32 = 80;
+
+fn build(seed: u32, gw: i32, gh: i32) -> Layout {
     let mut r = Rng::new(seed);
-    let w = 15 + (r.next() * 4.0) as i32;
-    let h = 10 + (r.next() * 3.0) as i32;
+    let w = 15 + (r.next() * 4.0) as i32 + gw;
+    let h = 10 + (r.next() * 3.0) as i32 + gh;
     let px = w - 7;
     let l0 = px + 1;
     let theme = *r.pick(&THEMES);
@@ -433,6 +474,19 @@ pub fn generate(seed: u32) -> Layout {
         Seat { kind: SeatKind::Chair, x: cx, y: cafe_y - 1, ax: cx + 1, ay: cafe_y - 1, face: Face::DL, table: Some("cafe"), lift: 4.0, dx: 0.0, depth: None },
         Seat { kind: SeatKind::Chair, x: cx - 1, y: cafe_y, ax: cx - 2, ay: cafe_y, face: Face::DR, table: Some("cafe"), lift: 4.0, dx: 0.0, depth: None },
     ];
+    // a grown room's long lounge gets more cafe tables down the middle, two rows of floor
+    // between each, and stops short of the sofa
+    if gh > 0 {
+        let mut y = cafe_y + 5;
+        while y + 6 <= h - 3 {
+            b.place("table", cx, y, 1, 1, Atlas::Cafe);
+            b.place("chairL", cx, y - 1, 1, 1, Atlas::Cafe);
+            b.place("chairR", cx - 1, y, 1, 1, Atlas::Cafe);
+            seats.push(Seat { kind: SeatKind::Chair, x: cx, y: y - 1, ax: cx + 1, ay: y - 1, face: Face::DL, table: Some("cafe"), lift: 4.0, dx: 0.0, depth: None });
+            seats.push(Seat { kind: SeatKind::Chair, x: cx - 1, y, ax: cx - 2, ay: y, face: Face::DR, table: Some("cafe"), lift: 4.0, dx: 0.0, depth: None });
+            y += 5;
+        }
+    }
     for s in &seats {
         b.reserve(s.ax, s.ay);
     }
@@ -716,6 +770,25 @@ mod tests {
             seen.extend(generate(seed.wrapping_mul(2654435761)).lounge.games.iter().map(|g| g.kind));
         }
         assert_eq!(seen.len(), Play::ALL.len(), "{seen:?}");
+    }
+
+    #[test]
+    fn a_grown_room_seats_its_crew_and_every_seat_can_be_reached() {
+        for seed in 0..12u32 {
+            let seed = seed.wrapping_mul(2654435761);
+            let base = generate(seed);
+            assert_eq!(generate_for(seed, base.desks.len()).w, base.w, "a crew that fits keeps the seed's room");
+            for crew in [24, 96, 320, MAX_CREW] {
+                let o = generate_for(seed, crew);
+                assert!(o.desks.len() >= crew, "seed {seed}: {} desks for {crew}", o.desks.len());
+                assert_eq!(o.theme.name, base.theme.name);
+                let reach = o.flood(o.door);
+                for s in o.desks.iter().chain(&o.lounge.seats) {
+                    assert!(reach.contains(&s.access()), "seed {seed}, crew {crew}: seat access unreachable");
+                }
+                assert!((1..=2).contains(&o.lounge.games.len()));
+            }
+        }
     }
 
     #[test]
